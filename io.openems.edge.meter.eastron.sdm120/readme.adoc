@@ -1,0 +1,9 @@
+= Eastron SDM 120 Meter
+This implementation is functionally compatible with a number of energy meters with the name "SDM 120".
+
+Little 1-phase cousin of the 3-phase SDM 630.
+
+Implemented Natures:
+- ElectricityMeter
+
+https://github.com/OpenEMS/openems/tree/develop/io.openems.edge.meter.eastron.sdm120[Source Code icon:github[]]
