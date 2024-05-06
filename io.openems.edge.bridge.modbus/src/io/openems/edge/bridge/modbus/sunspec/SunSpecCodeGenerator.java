@@ -39,12 +39,14 @@ public class SunSpecCodeGenerator {
 	 * Path to the SunSpec model Json files; download them from
 	 * https://github.com/sunspec/models.
 	 */
-	private static final String SUNSPEC_JSON_PATH = System.getProperty("user.home") + "\\git\\sunspec\\json\\";
+	private static final String SUNSPEC_JSON_PATH = System.getProperty("user.home") + "/git/sunspec/json/";
 	/**
 	 * Path to the generated output file.
 	 */
-	private static final String OUT_FILE_PATH = System.getProperty("user.dir")
-			+ "\\src\\io\\openems\\edge\\bridge\\modbus\\sunspec\\DefaultSunSpecModel.java";
+//	private static final String OUT_FILE_PATH = System.getProperty("user.dir")
+//			+ "\\src\\io\\openems\\edge\\bridge\\modbus\\sunspec\\DefaultSunSpecModel.java";
+	private static final String OUT_FILE_PATH = System.getProperty("user.home")
+			+ "/git/openems-dev/DefaultSunSpecModel.java";
 
 	/**
 	 * Json files that should be ignored; mainly because certain features are not
@@ -86,7 +88,6 @@ public class SunSpecCodeGenerator {
 			"model_160.json", //
 			"model_211.json", //
 			"model_212.json", //
-			"model_213.json", //
 			"model_214.json", //
 			"model_220.json", //
 			"model_302.json", //
@@ -119,6 +120,7 @@ public class SunSpecCodeGenerator {
 	 */
 	public static void main(String[] args) throws Exception {
 		System.out.println(SUNSPEC_JSON_PATH);
+		System.out.println(OUT_FILE_PATH);
 		var generator = new SunSpecCodeGenerator();
 		var models = generator.parseSunSpecFiles();
 		generator.writeSunSpecModelJavaFile(models);
