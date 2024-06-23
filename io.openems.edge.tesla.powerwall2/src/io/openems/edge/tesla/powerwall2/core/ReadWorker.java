@@ -3,12 +3,16 @@ package io.openems.edge.tesla.powerwall2.core;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.URL;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -28,15 +32,20 @@ public class ReadWorker extends AbstractCycleWorker {
 
 	private static final String URL_SYSTEM_STATUS_SOE = "/system_status/soe";
 	private static final String URL_METERS_AGGREGATES = "/meters/aggregates";
+	private static final String URL_LOGIN = "/login/Basic";
 
 	private final TeslaPowerwall2CoreImpl parent;
 	private final String baseUrl;
+	final String emailAddress;
+	final String password;
+	private List<String> cookies = new ArrayList<String>();
 
-	protected ReadWorker(TeslaPowerwall2CoreImpl parent, Inet4Address ipAddress, int port)
+	protected ReadWorker(TeslaPowerwall2CoreImpl parent, Inet4Address ipAddress, int port, String emailAddress, String password)
 			throws NoSuchAlgorithmException, KeyManagementException {
 		this.parent = parent;
 		this.baseUrl = "https://" + ipAddress.getHostAddress() + ":" + port + "/api";
-
+		this.emailAddress = emailAddress;
+		this.password = password;
 		/*
 		 * Disable SSL certificate checking
 		 */
@@ -66,7 +75,11 @@ public class ReadWorker extends AbstractCycleWorker {
 		this.parent.getBattery().ifPresent(battery -> {
 
 			try {
-				var soe = this.getResponse(URL_SYSTEM_STATUS_SOE);
+				if (cookies.isEmpty()) 
+				{
+					cookies = this.login(URL_LOGIN);					
+				}
+    			var soe = this.getResponse(URL_SYSTEM_STATUS_SOE);
 				battery._setSoc(Math.round(JsonUtils.getAsFloat(soe, "percentage")));
 
 				var agg = this.getResponse(URL_METERS_AGGREGATES);
@@ -125,6 +138,13 @@ public class ReadWorker extends AbstractCycleWorker {
 			var url = new URL(this.baseUrl + path);
 			var connection = (HttpsURLConnection) url.openConnection();
 			connection.setHostnameVerifier((hostname, session) -> true);
+			for (String cookie : cookies)
+			{
+				connection.setRequestProperty("Cookie", cookie);				
+			}
+//			connection.setRequestProperty("Content-Type", "application/json");
+//			connection.setRequestMethod("GET");
+			
 			try (var reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
 				var content = reader.lines().collect(Collectors.joining());
 				return JsonUtils.parseToJsonObject(content);
@@ -134,4 +154,44 @@ public class ReadWorker extends AbstractCycleWorker {
 		}
 	}
 
+	/**
+	 * Gets the session-cookies of a login HTTPS POST Request.
+	 *
+	 * @param path the api path
+	 * @returns session-cookies
+	 * @throws OpenemsNamedException on error
+	 */
+	private List<String> login(String path) throws OpenemsNamedException {
+		try {			
+//			String POST_PARAMS = "username=customer&email=fanass@gmx.de&password=hugo1234&force_sm_off=false";
+			String POST_PARAMS = "username=customer&email=" + emailAddress + "&password=" + password + "&force_sm_off=false";
+			
+			var url = new URL(this.baseUrl + path);
+			var connection = (HttpsURLConnection) url.openConnection();
+			connection.setRequestMethod("POST");
+			connection.setHostnameVerifier((hostname, session) -> true);
+			connection.setConnectTimeout(5000);
+			connection.setReadTimeout(5000);
+
+//			FOr POST only - START
+			connection.setDoOutput(true);
+			OutputStream os = connection.getOutputStream();
+			os.write(POST_PARAMS.getBytes());
+			os.flush();
+			os.close();
+//			For POST only - END
+
+			var code = connection.getResponseCode();
+			if (code != HttpURLConnection.HTTP_OK)
+			{
+				cookies.clear();
+				throw new OpenemsException("login failed: got HTTP-code:" + code);
+			}
+		    List<String>cookies = connection.getHeaderFields().get("Set-Cookie");
+		    return cookies;	
+		    
+		} catch (IOException e) {
+			throw new OpenemsException(e.getClass().getSimpleName() + ": " + e.getMessage());
+		}
+	}
 }

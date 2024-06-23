@@ -49,7 +49,7 @@ public class TeslaPowerwall2CoreImpl extends AbstractOpenemsComponent
 	private void activate(ComponentContext context, Config config)
 			throws KeyManagementException, NoSuchAlgorithmException, OpenemsException {
 		super.activate(context, config.id(), config.alias(), config.enabled());
-		this.worker = new ReadWorker(this, InetAddressUtils.parseOrError(config.ipAddress()), config.port());
+		this.worker = new ReadWorker(this, InetAddressUtils.parseOrError(config.ipAddress()), config.port(), config.emailAddress(), config.password());
 		this.worker.activate(config.id());
 	}
 

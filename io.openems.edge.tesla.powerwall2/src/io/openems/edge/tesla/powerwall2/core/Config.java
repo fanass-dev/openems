@@ -4,7 +4,7 @@ import org.osgi.service.metatype.annotations.AttributeDefinition;
 import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 
 @ObjectClassDefinition(name = "Tesla Powerwall 2 Core", //
-		description = "Implements the Tesla Powerwall 2 Core component.")
+		description = "Implements the Tesla Powerwall 2 Core component (with authentication).")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
@@ -21,6 +21,12 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 
 	@AttributeDefinition(name = "Port", description = "Port of the Tesla Powerwall 2 API")
 	int port() default 443;
+
+	@AttributeDefinition(name = "Email-Address", description = "Customer Email-Address")
+	String emailAddress() default "";
+
+	@AttributeDefinition(name = "Password", description = "Customer account password")
+	String password() default "";
 
 	String webconsole_configurationFactory_nameHint() default "Tesla Powerwall 2 Core [{id}]";
 

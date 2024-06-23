@@ -9,6 +9,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 		private String id;
 		private String ipAddress;
 		private int port;
+		private String emailAddress;
+		private String password;
 
 		private Builder() {
 		}
@@ -25,6 +27,16 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 
 		public Builder setPort(int port) {
 			this.port = port;
+			return this;
+		}
+
+		public Builder setPassword(String password) {
+			this.password = password;
+			return this;
+		}
+
+		public Builder setEmailAddress(String emailAddress) {
+			this.emailAddress = emailAddress;
 			return this;
 		}
 
@@ -57,5 +69,15 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	@Override
 	public int port() {
 		return this.builder.port;
+	}
+
+	@Override
+	public String emailAddress() {
+		return this.builder.emailAddress;
+	}
+
+	@Override
+	public String password() {
+		return this.builder.password;
 	}
 }

@@ -1,6 +1,6 @@
 = Tesla Powerwall 2
 
-Implementation of the Tesla Powerwall 2 energy storage system
+Implementation of the Tesla Powerwall 2 energy storage system (with authentication)
 
 Implemented Natures::
 - SymmetricEss
