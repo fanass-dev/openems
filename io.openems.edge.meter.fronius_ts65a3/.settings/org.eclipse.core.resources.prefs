@@ -1,0 +1,8 @@
+eclipse.preferences.version=1
+encoding//src/io/openems/edge/meter/fronius_ts65a3/Config.java=UTF-8
+encoding//src/io/openems/edge/meter/fronius_ts65a3/MeterFroniusTS65A3.java=UTF-8
+encoding//src/io/openems/edge/meter/fronius_ts65a3/MeterFroniusTS65A3Impl.java=UTF-8
+encoding//test/io/openems/edge/meter/fronius_ts65a3/MeterFroniusTS65A3ImplTest.java=UTF-8
+encoding/<project>=UTF-8
+encoding/bnd.bnd=UTF-8
+encoding/readme.adoc=UTF-8
