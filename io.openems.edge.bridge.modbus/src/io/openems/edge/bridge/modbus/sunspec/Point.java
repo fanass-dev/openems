@@ -408,17 +408,21 @@ public abstract sealed class Point {
 
 		public final int bit;
 
-		private BitPoint(int bit, String name, String label, AbstractDoc<?> doc) {
-			super(name, label, "", null /* point type */, false, AccessMode.READ_ONLY, doc);
+		private BitPoint(int bit, String name, String label, AbstractDoc<?> doc, AccessMode accessMode) {
+			super(name, label, "", null /* point type */, false, accessMode, doc);
 			this.bit = bit;
 		}
 
 		public BitPoint(int bit, String name, String label) {
-			this(bit, name, label, Doc.of(OpenemsType.BOOLEAN));
+			this(bit, name, label, Doc.of(OpenemsType.BOOLEAN), AccessMode.READ_ONLY);
+		}
+
+		public BitPoint(int bit, String name, String label, AccessMode accessMode) {
+			this(bit, name, label, Doc.of(OpenemsType.BOOLEAN), accessMode);
 		}
 
 		public BitPoint(int bit, String name, String label, Level level) {
-			this(bit, name, label, Doc.of(level));
+			this(bit, name, label, Doc.of(level), AccessMode.READ_ONLY);
 		}
 	}
 }

@@ -1,4 +1,4 @@
-package io.openems.edge.meter.fronius_ts65a3;
+package io.openems.edge.ess.fronius.gen24;
 
 import org.junit.Test;
 
@@ -7,11 +7,11 @@ import io.openems.edge.bridge.modbus.test.DummyModbusBridge;
 import io.openems.edge.common.test.ComponentTest;
 import io.openems.edge.common.test.DummyConfigurationAdmin;
 
-public class MeterFroniusTS65A3ImplTest {
+public class MyModbusDeviceTest {
 
 	@Test
 	public void test() throws Exception {
-		new ComponentTest(new MeterFroniusTS65A3Impl()) //
+		new ComponentTest(new FroniusGen24EssImpl()) //
 				.addReference("cm", new DummyConfigurationAdmin()) //
 				.addReference("setModbus", new DummyModbusBridge("modbus0")) //
 				.activate(MyConfig.create() //

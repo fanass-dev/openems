@@ -205,6 +205,9 @@ public abstract class AbstractOpenemsSunSpecComponent extends AbstractOpenemsMod
 							var sunSpecModel = activeEntry.getKey();
 							var priority = activeEntry.getValue();
 
+							this.logInfo(this.log,
+									"Adding SunSpec-Model [" + blockId + "] starting at [" + startAddress + "]");
+
 							this.addBlock(startAddress, sunSpecModel, priority);
 							remainingBlocks.remove(activeEntry.getKey().getBlockId());
 						} else {
@@ -300,6 +303,8 @@ public abstract class AbstractOpenemsSunSpecComponent extends AbstractOpenemsMod
 		var writeElements = new ArrayList<ModbusElement>();
 		startAddress += 2;
 		for (var i = 0; i < model.points().length; i++) {
+			this.logInfo(this.log, "Loop [" + i + "] addr: " + startAddress);
+
 			var point = model.points()[i];
 			var elements = this.addModbusElementAndChannels(startAddress, model, point);
 			var length = elements.stream().mapToInt(e -> e.length).sum();
