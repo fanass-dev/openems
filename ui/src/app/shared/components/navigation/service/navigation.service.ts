@@ -52,7 +52,12 @@ export class NavigationService {
         }
 
         // If edgeconfig includes this factories, user gets forced to use new ui navigation
-        return config.hasFactories(["Evse.Controller.Single", "Scheduler.JSCalendar"]);
+        // NOTE: "Scheduler.JSCalendar" removed locally - forces new menu-based navigation
+        // (hides Grid/Consumption/Production/Autarchy/Selfconsumption tiles from the Live
+        // overview into the left menu instead) purely as a UI side-effect of configuring
+        // this Scheduler, unrelated to its actual scheduling behavior. Will reappear if
+        // this repo is synced with upstream develop.
+        return config.hasFactories(["Evse.Controller.Single"]);
     }
 
     /**
