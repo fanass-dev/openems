@@ -236,6 +236,13 @@ gradle-app.setting
 io.openems.edge.controller.api.mqtt/edge0
 io.openems.edge.application/c:/
 
+# Runtime-generated backup of the original Fronius time-of-use schedule,
+# written by io.openems.edge.ess.fronius.json on first write-activation and
+# removed again on clean deactivation (see its readme.adoc). Filename
+# includes the Component-ID, so this needs to be a wildcard; location
+# depends on the working directory Edge was launched from.
+fronius-ess-*-timeofuse-backup.json
+
 /io.openems.*/bin/
 /io.openems.*/bin_test/
 /io.openems.*/generated/
