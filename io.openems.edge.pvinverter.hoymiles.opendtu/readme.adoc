@@ -1,0 +1,244 @@
+= Hoymiles-Mikrowechselrichter via OpenDTU (JSON/HTTP)
+
+Implementiert einen PV-Wechselrichter in OpenEMS (technisch als
+`ElectricityMeter` mit `MeterType.PRODUCTION`, da nur ausgelesen und nicht
+aktiv gesteuert/gedrosselt wird), der Hoymiles-Mikrowechselrichter über die
+Web-API eines OpenDTU-Geräts (ESP32-basierte Open-Source-DTU, Ersatz für
+Hoymiles' eigene Cloud-DTU) ausliest - **ohne Modbus**.
+
+Es wird **ein** Endpunkt abgefragt:
+
+  http://<opendtu-ip>/api/livedata/status
+  http://<opendtu-ip>/api/livedata/status?inv=<inverter-serial>   (optional, siehe unten)
+
+Vorher im Browser testen. Alle Feld-Mappings stammen aus der offiziellen
+OpenDTU Web-API-Dokumentation:
+https://www.opendtu.solar/firmware/web_api/
+
+== Zwei Modi: Aggregat vs. Einzel-Wechselrichter
+
+Das Bundle unterstützt zwei Betriebsarten, gesteuert über das Config-Feld
+`inverterSerial`:
+
+[cols="1,1,1"]
+|===
+|Modus |`inverterSerial` |Was wird gelesen
+
+|**Aggregat** (Standard) |leer |`total.Power`/`YieldDay`/`YieldTotal` - Summe
+**aller** an dieser OpenDTU angemeldeten Wechselrichter. Keine
+AC-Spannung/-Strom/-Frequenz verfügbar, das liefert OpenDTU auf dieser
+Aggregationsebene grundsätzlich nicht.
+|**Einzel-Wechselrichter** |gesetzt (Seriennummer) |zusätzlich `AC["0"]`
+(Power/Voltage/Current/Frequency) und `INV["0"]`
+(Power DC/YieldDay/YieldTotal/Temperature/Efficiency) - jeweils nur für den
+über `?inv=<serial>` ausgewählten Wechselrichter.
+|===
+
+Für eine Anlage mit **mehreren** Hoymiles-Mikrowechselrichtern an einer
+OpenDTU:
+
+* Eine Instanz im **Aggregat-Modus** für die Gesamt-PV-Leistung der Anlage
+  (einfachste Lösung, ein Component reicht).
+* Optional zusätzlich je eine Instanz im **Einzel-Wechselrichter-Modus** pro
+  Gerät, falls du die Leistung/den Ertrag einzelner Module/Strings separat
+  sehen willst (z. B. bei unterschiedlicher Ausrichtung/Verschattung).
+
+== Bewusst NICHT gemappt: hints.time_sync
+
+Der OpenDTU-Response enthält unter `hints` neben `radio_problem` und
+`default_password` auch ein Feld `time_sync`. Die Polarität von
+`radio_problem`/`default_password` (jeweils `true` = Problem/noch
+Standard-Passwort aktiv) konnte über den
+https://newreleases.io/project/github/tbnobody/OpenDTU/release/v23.4.15[OpenDTU-v23.4.15-Changelog]
+und ein
+https://github.com/tbnobody/OpenDTU/issues/1000[GitHub-Issue mit echtem
+Beispiel-Response] verifiziert werden. Für `time_sync` gelang das **nicht**
+- der Versuch, den relevanten Firmware-Quellcode
+(`WebApi_ws_live.cpp`) direkt einzusehen, scheiterte an einem HTTP-429
+(`too_many_requests`) von GitHub, und keine der gefundenen Sekundärquellen
+gibt die Polarität eindeutig an. Nach der Projekt-Regel "keine Vermutungen
+als Fakt darstellen" wird dieses Feld daher **absichtlich nicht** als
+Channel gemappt, statt eine geratene Polarität zu riskieren. Falls du den
+Wert brauchst, prüfe ihn versuchsweise direkt per Browser/curl gegen deine
+OpenDTU und sag Bescheid - dann ergänzen wir den Channel mit einer
+verifizierten Polarität.
+
+== Mapping OpenDTU-Feld -> OpenEMS-Channel
+
+[cols="1,1,1"]
+|===
+|OpenDTU-Feld |OpenEMS-Channel |Skalierung
+
+|total.Power.v (Aggregat) / AC["0"].Power.v (Einzel) |ACTIVE_POWER |1:1 (W)
+|AC["0"].Voltage.v (nur Einzel-Modus) |VOLTAGE |x1000 (V -> mV)
+|AC["0"].Current.v (nur Einzel-Modus) |CURRENT |x1000 (A -> mA)
+|AC["0"].Frequency.v (nur Einzel-Modus) |FREQUENCY |x1000 (Hz -> mHz)
+|total.YieldDay.v / INV["0"].YieldDay.v |DAY_ENERGY (Custom-Channel) |1:1 (Wh)
+|total.YieldTotal.v / INV["0"].YieldTotal.v |ACTIVE_PRODUCTION_ENERGY |x1000 (kWh -> Wh)
+|hints.radio_problem |RADIO_PROBLEM (Custom-Channel, WARNING) |Bool 1:1
+|hints.default_password |DEFAULT_PASSWORD_ACTIVE (Custom-Channel, WARNING) |Bool 1:1
+|hints.time_sync |**nicht gemappt** - siehe oben |-
+|===
+
+`ACTIVE_POWER_L1/L2/L3` und `VOLTAGE_L1/L2/L3` werden automatisch aus
+`ACTIVE_POWER`/`VOLTAGE` abgeleitet (Drittel bzw. Kopie je Phase) über die
+Standard-Hilfsmethoden `ElectricityMeter.calculatePhasesFromActivePower()`
+und `calculatePhasesFromVoltage()`, da Hoymiles-Wechselrichter (auch die
+3-phasigen HMT-Modelle im hier gelesenen `AC["0"]`) nur einen
+Summen-/Durchschnittswert liefern, den OpenDTU an dieser Stelle der API
+ausgibt.
+
+`REACTIVE_POWER` und `ACTIVE_CONSUMPTION_ENERGY` werden nicht gesetzt (die
+API liefert an dieser Stelle keine Blindleistung, und ein Wechselrichter
+"verbraucht" im Sinne von OpenEMS nichts).
+
+== Bekannte Einschränkung: nur String/Phase-Index "0"
+
+Im Einzel-Wechselrichter-Modus wird ausschließlich Index `"0"` aus `AC` und
+`INV` gelesen. Bei 3-phasigen Hoymiles-Modellen (z. B. HMT) meldet OpenDTU
+zusätzliche AC-Phasen unter `AC["1"]`/`AC["2"]`, die dieses Bundle aktuell
+**nicht** ausliest. Ebenso werden die per-DC-String-Zähler unter
+`DC["0"]`..`DC["3"]` nicht gelesen (nur die bereits aufsummierten
+Pro-Inverter-Werte aus `INV["0"]`). Beides bei Bedarf nach demselben Muster
+(`getFloat`/`getBool` in `OpenDtuPvInverterJsonImpl`) leicht ergänzbar.
+
+== Authentifizierung (optional)
+
+OpenDTU liefert `/api/livedata/status` standardmäßig **ohne**
+Authentifizierung, solange unter Settings -> Security die Option "Enable
+read-only access" aktiviert ist (OpenDTU-Standardeinstellung). Ist diese
+Option deaktiviert, verlangen **alle** Endpunkte HTTP-Basic-Auth
+(Standard-Zugangsdaten `admin`/`openDTU42`, falls nicht geändert).
+
+Die Config-Felder `username`/`password` sind deshalb optional und leer per
+Default. Ist `username` gesetzt, wird bei jedem Request automatisch ein
+`Authorization: Basic <base64(user:pass)>`-Header mitgeschickt.
+`password` ist als echtes Passwort-Feld
+(`AttributeType.PASSWORD`) deklariert, wird also im UI nicht im Klartext
+angezeigt.
+
+== Poll-Intervall
+
+Gleiches Prinzip wie bei den Fronius-Bundles: `pollEveryCycles` (Default
+`3`) steuert, wie oft (in Vielfachen der OpenEMS-Cycle-Time) OpenDTU
+abgefragt wird. Bei Bedarf anpassen, falls im Log harmlose INFO-Meldungen
+("Task is not queued twice") vom `HttpBridgeCycleService` auftauchen.
+
+== Warum `subscribeCycle` statt `subscribeJsonCycle`
+
+Anders als die Fronius-Bundles verwendet dieses Bundle die
+raw-String-Variante `subscribeCycle(...)` statt `subscribeJsonCycle(...)`.
+Grund: Das JSON-Parsing erfolgt hier manuell, nachdem optional ein
+Basic-Auth-Header über einen selbst gebauten `BridgeHttp.Endpoint`
+hinzugefügt wurde - die `HttpBridgeCycleService`-Schnittstelle bietet aber
+nur `subscribeJsonCycle(...)`-Überladungen, die eine reine URL-String
+entgegennehmen, ohne Möglichkeit, eigene Header zu setzen.
+
+== Verzeichnisstruktur
+
+[source]
+----
+io.openems.edge.pvinverter.hoymiles.opendtu/
+├── .classpath
+├── .gitignore
+├── .project
+├── .settings/
+│   └── org.eclipse.core.resources.prefs
+├── bnd.bnd
+├── readme.adoc
+├── src/
+│   └── io/openems/edge/pvinverter/hoymiles/opendtu/
+│       ├── Config.java
+│       ├── OpenDtuPvInverterJson.java
+│       └── OpenDtuPvInverterJsonImpl.java
+└── test/
+    └── .gitignore
+----
+
+`bnd.bnd`:
+
+[source]
+----
+Bundle-Name: OpenEMS Edge PV-Inverter Hoymiles (OpenDTU JSON)
+Bundle-Vendor: My Company
+Bundle-License: https://opensource.org/licenses/EPL-2.0
+Bundle-Version: 1.0.0.${tstamp}
+
+-buildpath: \
+	${buildpath},\
+	io.openems.common,\
+	io.openems.common.bridge.http,\
+	io.openems.edge.bridge.http,\
+	io.openems.edge.common,\
+	io.openems.edge.meter.api,\
+
+-testpath: \
+	${testpath}
+----
+
+== Einbau ins Projekt
+
+1. Diesen kompletten Ordner `io.openems.edge.pvinverter.hoymiles.opendtu/`
+   direkt neben die anderen Edge-Bundles legen (genauso wie bei den
+   Fronius-Bundles).
+2. In `io.openems.edge.application/EdgeApp.bndrun` das Bundle wieder an
+   zwei Stellen alphabetisch eintragen:
++
+[source]
+----
+# im -runrequires Block:
+bnd.identity;id='io.openems.edge.pvinverter.hoymiles.opendtu',\
+
+# im -runbundles Block:
+io.openems.edge.pvinverter.hoymiles.opendtu;version=snapshot,\
+----
++
+Danach "Resolve" und "Update" in der `EdgeApp.bndrun`-Ansicht ausführen,
+damit Bndtools/Eclipse das Projekt korrekt auflöst.
+3. Bundle bauen (in Eclipse importieren wie bei den Fronius-Bundles).
+4. In der Edge-Config eine Component-Instanz vom Typ
+   `PvInverter.Hoymiles.OpenDtu` anlegen:
+   * `ip`: IP-Adresse deiner OpenDTU (Pflichtfeld).
+   * `inverterSerial`: leer lassen für Aggregat-Modus (Summe aller
+     Wechselrichter), oder die Seriennummer eines konkreten Hoymiles-Geräts
+     für den Einzel-Wechselrichter-Modus.
+   * `username`/`password`: nur nötig, falls "Enable read-only access" in
+     OpenDTU deaktiviert ist.
+5. Die Instanz verhält sich wie jeder andere `ElectricityMeter` vom Typ
+   `PRODUCTION` in OpenEMS und kann z. B. in
+   `Controller.Ess.GridOptimizedCharge`, Energiefluss-Widgets oder eigenen
+   Summierungs-Controllern referenziert werden.
+
+== Produktions-Kachel im Energiemonitor (OpenEMS UI)
+
+Wie bei den Fronius-Bundles: `Config#type()` (Default `PRODUCTION`) wird
+beim Aktivieren gelesen und in `getMeterType()` zurückgegeben, damit
+`"type": "PRODUCTION"` korrekt in der EdgeConfig landet und die
+Produktions-Kachel im UI erscheint - ein rein im Java-Code hartkodiertes
+`getMeterType()` würde die UI nicht zuverlässig erreichen (siehe
+Begründung im `readme.adoc` von `io.openems.edge.pvinverter.fronius.json`,
+Abschnitt "Produktions-Kachel im Energiemonitor").
+
+== Bekannte Einschränkungen
+
+* Nur Phase/String-Index `"0"` wird gelesen (siehe oben) - 3-phasige
+  HMT-Modelle und einzelne DC-Strings werden aktuell nicht vollständig
+  abgebildet.
+* `hints.time_sync` wird bewusst nicht gemappt (siehe oben) - keine
+  verifizierte Polarität verfügbar.
+* Bei Ausfall/Nichterreichbarkeit der OpenDTU oder fehlendem/falschem
+  `inverterSerial` werden alle Channels auf `null` gesetzt und
+  `SLAVE_COMMUNICATION_FAILED` gesetzt; kein Retry/Backoff nötig, das
+  übernimmt der `BridgeHttp`-Cycle-Service bereits intern.
+
+== Quelle / Vorlage
+
+Struktur und HTTP/JSON-Muster übernommen von
+`io.openems.edge.pvinverter.fronius.json` (dieselbe Session/Projekt).
+
+OpenDTU Web-API-Dokumentation (alle Feld-Mappings):
+https://www.opendtu.solar/firmware/web_api/
+
+Verifikation der `hints.radio_problem`/`hints.default_password`-Polarität:
+https://newreleases.io/project/github/tbnobody/OpenDTU/release/v23.4.15
+https://github.com/tbnobody/OpenDTU/issues/1000
