@@ -80,8 +80,13 @@ export abstract class AbstractFlatWidget implements OnInit, OnDestroy {
                     for (const channelId of channelIds) {
                         channelAddresses.add(new ChannelAddress(this.componentId, channelId));
                     }
-                    this.dataService.subscribeChannels(Array.from(channelAddresses), this.edge, this.componentId);
                 }
+                // Subscribe unconditionally: aggregate widgets without a componentId (e.g.
+                // Consumption/Grid/Autarchy/Selfconsumption/Energy) rely entirely on
+                // getChannelAddresses() (e.g. "_sum/..." channels) and were previously never
+                // subscribed at all, because this call used to be nested inside the
+                // componentId-guard together with the per-component channelId loop above.
+                this.dataService.subscribeChannels(Array.from(channelAddresses), this.edge, this.componentId ?? undefined);
                 this.subscription.push(effect(() => {
                     const value = this.dataService.currentValue();
                     this.onCurrentData(value);
