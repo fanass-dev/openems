@@ -200,6 +200,14 @@ typings/
 .gradle
 /build/
 
+# Gradle User Home accidentally created inside the repo root (should live in
+# ~/.gradle / $GRADLE_USER_HOME instead) - daemon registry, native-lib cache,
+# wrapper distribution download, build cache.
+/daemon/
+/native/
+/wrapper/
+/caches/
+
 # Ignore Gradle GUI config
 gradle-app.setting
 
