@@ -1,0 +1,307 @@
+= Fronius PV-Wechselrichter via JSON/HTTP (Solar API v1)
+
+Implementiert einen PV-Wechselrichter in OpenEMS (technisch als
+`ElectricityMeter` mit `MeterType.PRODUCTION`, da nur ausgelesen und nicht
+aktiv gesteuert/gedrosselt wird), der einen Fronius Wechselrichter (GEN24
+**oder** Symo) über die Fronius Solar API ausliest - **ohne
+Modbus/SunSpec**.
+
+Es werden **zwei** Endpunkte abgefragt:
+
+  http://<inverter-ip>/solar_api/v1/GetInverterRealtimeData.cgi?Scope=Device&DeviceId=1&DataCollection=CommonInverterData
+  http://<inverter-ip>/solar_api/v1/GetPowerFlowRealtimeData.fcgi
+
+Beide vorher im Browser testen (DeviceId ggf. auf `0` ändern, falls `1`
+nichts liefert).
+
+== Wichtig: ActivePower kommt NICHT aus PAC
+
+**Wenn die Produktions-Kachel bei ladender Batterie zu niedrig anzeigt (z. B.
+nur die Differenz PV-Produktion minus Batterie-Ladeleistung statt der echten
+PV-Erzeugung), ist das genau dieser Bug - und dieses Bundle behebt ihn:**
+
+Bei einem Hybrid-Wechselrichter (GEN24 mit DC-gekoppeltem Speicher) ist `PAC`
+aus `CommonInverterData` die **AC-Ausgangsleistung** am Netzanschlusspunkt,
+nach Abzug der DC-seitigen Batterieladung - z. B. 3000 W PV-Ertrag bei 2500 W
+Ladeleistung ergibt `PAC` &asymp; 500 W, nicht 3000 W. Bestätigt an echten
+GEN24-mit-Speicher-API-Werten aus dem
+https://forum.pvoutput.org/t/fronius-gen24-with-battery-api-values/7790[PVOutput-Forum]:
+
+----
+p = 5566... watts AC Output (+ produce/export, - consume/import)
+P_PV = 5804... watts generation (DC Side)
+P_Akku = -1... watts to/from battery (+ discharging, - charging)
+----
+
+`Site.P_PV` aus `GetPowerFlowRealtimeData.fcgi` ist dagegen die echte
+DC-seitige PV-Erzeugung, unabhängig vom Speicher - genau das, was OpenEMS'
+Energiefluss-Formel braucht (`ConsumptionActivePower = Production + Ess +
+Grid`, siehe `SumImpl.java`): `Production` muss der tatsächliche PV-Ertrag
+sein, der Speicheranteil kommt separat über die ESS-Component. Deshalb liest
+dieses Bundle `ActivePower` ausschließlich aus `Site.P_PV`; `PAC` wird gar
+nicht mehr verwendet. Auf dem Symo (kein Speicher) ändert das rechnerisch
+nichts, da dort `P_PV` und `PAC` ohnehin identisch sind.
+
+== Warum dasselbe Bundle für GEN24 UND Symo funktioniert
+
+`GetInverterRealtimeData.cgi` ist ein **Pro-Gerät**-Endpunkt (nicht
+Pro-Anlage). Er liefert bei beiden Gerätetypen exakt dieselbe JSON-Struktur
+und **nie** Netz- oder Verbrauchswerte (`P_GRID`, `P_LOAD`) - unabhängig
+davon, ob am Gerät ein Speicher hängt oder nicht. Das deckt sich genau mit
+deiner Beschreibung des Symo (nur `P_PV`/`E_TOTAL`, kein `P_GRID`/`P_LOAD`):
+diese Werte gibt es an dieser Schnittstelle grundsätzlich nicht, auch nicht
+beim GEN24.
+
+Für deine zwei Anlagen brauchst du daher **zwei Component-Instanzen** dieses
+einen Bundles, die sich nur durch IP-Adresse und Component-ID
+unterscheiden:
+
+[cols="1,1,1"]
+|===
+|Component-ID |IP |Beschreibung
+
+|pvInverter1 |192.168.188.10 (GEN24) |Anlage 1, primär, mit Speicher
+|pvInverter2 |<IP des Symo>          |Anlage 2, sekundär, ohne Speicher
+|===
+
+Den Speicher (Batterie) und ggf. den Netzanschluss der Anlage 1 deckt
+weiterhin dein bereits laufendes
+`io.openems.edge.meter.fronius.smartmeter.json`-Bundle ab (Smart Meter am
+GEN24) - dieses neue Bundle ist ausschließlich für die reine
+PV-Erzeugungsseite beider Wechselrichter gedacht.
+
+== Unterschied zur Smart-Meter-Schnittstelle: verschachteltes JSON
+
+`GetMeterRealtimeData.cgi` liefert flache Zahlen
+(`"PowerReal_P_Sum": 1234.5`). `GetInverterRealtimeData.cgi` verschachtelt
+dagegen **jeden** Wert in ein Objekt mit `Value` und `Unit`:
+
+[source,json]
+----
+"PAC": { "Value": 3373, "Unit": "W" },
+"UAC": { "Value": 232,  "Unit": "V" },
+"DAY_ENERGY": { "Value": null, "Unit": "Wh" }
+----
+
+Die Parsing-Hilfsmethode (`getValueOrNull`) navigiert deshalb zuerst ins
+verschachtelte Objekt und dann erst zu `Value`, statt den Wert wie beim
+Smart Meter direkt zu lesen.
+
+== Mapping Fronius-Feld -> OpenEMS-Channel
+
+[cols="1,1,1"]
+|===
+|Fronius-Feld |OpenEMS-Channel |Skalierung
+
+|Site.P_PV (aus `GetPowerFlowRealtimeData.fcgi`) |ACTIVE_POWER |1:1 (W)
+|UAC (aus `CommonInverterData`) |VOLTAGE                   |x1000 (V -> mV)
+|IAC          |CURRENT                   |x1000 (A -> mA)
+|FAC          |FREQUENCY                 |x1000 (Hz -> mHz)
+|(integriert aus Site.P_PV, siehe unten) |ACTIVE_PRODUCTION_ENERGY |lokal aufintegriert (Wh)
+|TOTAL_ENERGY |FRONIUS_TOTAL_ENERGY (Custom-Channel) |1:1 (Wh) - nur Diagnose, siehe unten
+|DAY_ENERGY   |DAY_ENERGY (Custom-Channel)|1:1 (Wh) - **auf GEN24 immer `null`**
+|YEAR_ENERGY  |YEAR_ENERGY (Custom-Channel)|1:1 (Wh) - **auf GEN24 immer `null`**
+|===
+
+== Bestätigter Bug (behoben): TOTAL_ENERGY unterzählt PV-Ertrag beim Laden
+
+Eine frühere Version dieses Bundles mappte `TOTAL_ENERGY` direkt auf
+`ACTIVE_PRODUCTION_ENERGY` und markierte den Verdacht unten als
+"ungeprüft, keine bestätigte Diagnose". Der Verdacht hat sich inzwischen
+**bestätigt**, im Rahmen der Fehlersuche zu einem negativen "Sonstiger
+Verbrauch" in der UI-History (siehe `io.openems.edge.ess.fronius.json` und
+die UI-Bundles): `TOTAL_ENERGY` aus `CommonInverterData` ist derselbe
+AC-Ausgangs-Zaehler wie `PAC` - er zieht auf einem Hybrid-Wechselrichter mit
+DC-gekoppeltem Speicher die Batterieladung ebenso ab wie `PAC` das bei der
+Momentanleistung tat (siehe Abschnitt oben, "Wichtig: ActivePower kommt NICHT
+aus PAC"). An einem Tag mit z. B. 7-8 kWh Batterieladung fehlte dieser Betrag
+dadurch im kumulierten `_sum/ProductionActiveEnergy` - und in der Folge auch
+im daraus abgeleiteten `_sum/ConsumptionActiveEnergy` (`Core.Sum`,
+`SumImpl.java`: `Consumption = (EssDischarge + GridBuy + Production) -
+(EssCharge + GridSell)`), bis hin zu einem rechnerisch unmöglichen negativen
+"Sonstiger Verbrauch" (Gesamtverbrauch kleiner als die Summe einzeln
+gemessener Verbraucher).
+
+**Fix:** `ACTIVE_PRODUCTION_ENERGY` wird jetzt lokal aus dem bereits
+korrigierten `ActivePower` (`Site.P_PV`) aufintegriert
+(`CalculateEnergyFromPower`, dasselbe Muster wie bereits im
+`io.openems.edge.ess.fronius.json`-Bundle für `ActiveChargeEnergy`/
+`ActiveDischargeEnergy` verwendet) - daher benötigt dieses Bundle jetzt
+optional eine `Timedata`-Referenz (typischerweise `Timedata.Rrd4j`), damit
+der kumulierte Wert einen Edge-Neustart übersteht statt wieder bei 0 zu
+beginnen, genau wie beim Ess-Bundle. Fronius' eigener `TOTAL_ENERGY`-Zaehler
+bleibt als rein diagnostischer Channel `FRONIUS_TOTAL_ENERGY` erhalten, um
+beide Werte bei Bedarf vergleichen zu können - er wird aber nicht mehr fuer
+`ACTIVE_PRODUCTION_ENERGY` verwendet.
+
+`ACTIVE_POWER_L1/L2/L3` und `VOLTAGE_L1/L2/L3` werden automatisch aus
+`ACTIVE_POWER`/`VOLTAGE` abgeleitet (Drittel bzw. Kopie je Phase) über die
+Standard-Hilfsmethoden `ElectricityMeter.calculatePhasesFromActivePower()`
+und `calculatePhasesFromVoltage()`, da die Solar-API nur Summen-/
+Durchschnittswerte über alle Phasen liefert, keine Werte je Phase.
+
+`REACTIVE_POWER` und `ACTIVE_CONSUMPTION_ENERGY` werden nicht gesetzt (die
+API liefert an dieser Stelle keine Blindleistung, und ein Wechselrichter
+"verbraucht" im Sinne von OpenEMS nichts).
+
+== Bekannter Fronius-Bug: DAY_ENERGY/YEAR_ENERGY auf GEN24
+
+Laut offizieller Fronius Solar API V1-Dokumentation liefert der GEN24 (ab
+Firmware 1.14) für `DAY_ENERGY` und `YEAR_ENERGY` grundsätzlich `null` -
+nur `TOTAL_ENERGY` funktioniert zuverlässig. Beim Symo sind normalerweise
+alle drei Zähler gefüllt. Die Komponente behandelt `null` in jedem Feld
+robust (Channel bleibt einfach leer/unavailable), das ist also kein Fehler
+in dieser Implementierung, sondern eine Eigenheit des GEN24 selbst.
+
+Willst du trotzdem einen Tagesertrag für die GEN24-Anlage in Grafana/
+Home Assistant sehen, am einfachsten per `CalculateEnergyFromPower` in
+OpenEMS aus `ACTIVE_POWER` selbst integrieren, oder den bereits laufenden
+Tageswert aus deinem Smart-Meter-Bundle (`ACTIVE_PRODUCTION_ENERGY`
+kumulativ, Differenzbildung um Mitternacht) verwenden.
+
+== Poll-Intervall
+
+Gleiches Prinzip wie beim Smart-Meter-Bundle: `pollEveryCycles` (Default
+`3`) steuert, wie oft (in Vielfachen der OpenEMS-Cycle-Time) das Gerät
+abgefragt wird. Antwortet der Wechselrichter langsamer als die Cycle-Time,
+siehst du sonst harmlose INFO-Logs ("Task is not queued twice") vom
+`HttpBridgeCycleService`. Beobachte nach dem Import zunächst denselben
+Wert wie beim Smart Meter (aktuell `5` bei dir) und passe bei Bedarf an.
+
+== Verzeichnisstruktur
+
+[source]
+----
+io.openems.edge.pvinverter.fronius.json/
+├── .classpath
+├── .gitignore
+├── .project
+├── .settings/
+│   └── org.eclipse.core.resources.prefs
+├── bnd.bnd
+├── readme.adoc
+├── src/
+│   └── io/openems/edge/pvinverter/fronius/json/
+│       ├── Config.java
+│       ├── FroniusPvInverterJson.java
+│       └── FroniusPvInverterJsonImpl.java
+└── test/
+    └── .gitignore
+----
+
+`bnd.bnd`:
+
+[source]
+----
+Bundle-Name: OpenEMS Edge PV-Inverter Fronius (JSON)
+Bundle-Vendor: My Company
+Bundle-License: https://opensource.org/licenses/EPL-2.0
+Bundle-Version: 1.0.0.${tstamp}
+
+-buildpath: \
+	${buildpath},\
+	io.openems.common,\
+	io.openems.common.bridge.http,\
+	io.openems.edge.bridge.http,\
+	io.openems.edge.common,\
+	io.openems.edge.meter.api,\
+
+-testpath: \
+	${testpath}
+----
+
+== Einbau ins Projekt
+
+1. Diesen kompletten Ordner `io.openems.edge.pvinverter.fronius.json/`
+   direkt neben die anderen Edge-Bundles legen (genauso wie du es bereits
+   mit `io.openems.edge.meter.fronius.smartmeter.json/` gemacht hast).
+2. In `io.openems.edge.application/EdgeApp.bndrun` das Bundle wieder an
+   zwei Stellen alphabetisch eintragen:
++
+[source]
+----
+# im -runrequires Block:
+bnd.identity;id='io.openems.edge.pvinverter.fronius.json',\
+
+# im -runbundles Block:
+io.openems.edge.pvinverter.fronius.json;version=snapshot,\
+----
++
+Danach "Resolve" und "Update" in der `EdgeApp.bndrun`-Ansicht ausführen,
+damit Bndtools/Eclipse das Projekt korrekt auflöst.
+3. Bundle bauen (in Eclipse importieren wie beim Smart-Meter-Bundle, oder
+   `./gradlew :io.openems.edge.pvinverter.fronius.json:build`).
+4. In der Edge-Config **zwei** Component-Instanzen vom Typ
+   `PvInverter.Fronius.Json` anlegen:
+   * Anlage 1 (GEN24, primär): Component-ID z. B. `pvInverter1`, IP
+     `192.168.188.10`, Device-ID `1`.
+   * Anlage 2 (Symo, sekundär): Component-ID z. B. `pvInverter2`, IP des
+     Symo, Device-ID `1` (bei einem einzelnen Gerät am Datamanager i. d. R.
+     unverändert `1` lassen, notfalls `0` probieren).
+5. Beide Instanzen verhalten sich wie jeder andere `ElectricityMeter` vom
+   Typ `PRODUCTION` in OpenEMS und können z. B. in
+   `Controller.Ess.GridOptimizedCharge`, Energiefluss-Widgets oder eigenen
+   Summierungs-Controllern referenziert werden. Für eine kombinierte
+   Gesamt-PV-Leistung beider Anlagen ggf. einen einfachen
+   `SumMeter`/`Controller.Api.*`-Ansatz oder eine eigene kleine
+   Summier-Komponente ergänzen - das ist mit diesem Bundle nicht
+   automatisch.
+
+== Produktions-Kachel im Energiemonitor (OpenEMS UI)
+
+Damit die Produktion im Energiemonitor der OpenEMS-UI als eigene Kachel
+auftaucht, reicht ein zur Laufzeit korrekt zurueckgegebenes
+`getMeterType() == MeterType.PRODUCTION` NICHT aus. Die UI ermittelt
+(`ui/src/app/shared/edge/edgeconfig.ts`, Methode `isProducer()`), ob eine
+Komponente produziert, indem sie das per EdgeConfig uebertragene
+Component-Property `type` prueft - und dieses Property wird nur dann
+zuverlaessig uebertragen, wenn es aus einem echten Metatype-Config-Attribut
+stammt (Apache Felix SCR ueberträgt statische
+`@Component(property = {"type=PRODUCTION"})`-Annotationen nicht
+zuverlaessig in die EdgeConfig; ein rein im Java-Code hartkodiertes
+`getMeterType()` ist fuer die UI komplett unsichtbar, obwohl `Core.Sum` und
+`Controller.Debug.Log` den Wert korrekt sehen). Fehlt beides, greift die UI
+nur noch auf eine intern hartkodierte Liste bekannter Standard-Factory-IDs
+zurueck (z. B. `PV-Inverter.Fronius`, `PV-Inverter.SunSpec`,
+`Simulator.PvInverter`) - unsere eigene Factory-ID
+`PvInverter.Fronius.Json` steht dort naturgemaess nicht drin.
+
+Deshalb hat dieses Bundle ein echtes `Meter-Type`-Config-Attribut
+(`Config#type()`, Default `PRODUCTION`), das beim Aktivieren gelesen und in
+`getMeterType()` zurueckgegeben wird - dadurch landet `"type": "PRODUCTION"`
+korrekt in der EdgeConfig und die Kachel erscheint. Symptome, falls das mal
+wieder verloren geht: Wechselrichter-Werte erscheinen korrekt im
+`Controller.Debug.Log` und in `_sum/ProductionActivePower`, aber es gibt
+keine Produktions-Kachel im UI (Referenz:
+https://community.openems.io/t/implementation-deye-inverter-approach/2541).
+
+== Bekannte Einschränkungen
+
+* `SAC` (Scheinleistung) wird laut Fronius-Dokumentation "derzeit nicht
+  korrekt von allen Wechselrichtern unterstützt" und daher hier nicht
+  gemappt.
+* `IDC`/`UDC` (DC-Seite) werden aktuell nicht ausgelesen - bei Bedarf nach
+  demselben Muster (`getValueOrNull`) leicht ergänzbar, z. B. als weitere
+  Custom-Channels in `FroniusPvInverterJson`.
+* Bei Mehrstring-Geräten mit mehreren `DeviceId`s (z. B. Symo mit mehreren
+  Wechselrichtern an einem Datamanager) einfach eine weitere
+  Component-Instanz mit der jeweils anderen `DeviceId` anlegen.
+* Bei Ausfall/Nichterreichbarkeit des Geräts werden alle Channels auf
+  `null` gesetzt und `SLAVE_COMMUNICATION_FAILED` gesetzt; kein
+  Retry/Backoff nötig, das übernimmt der `BridgeHttp`-Cycle-Service
+  bereits intern.
+
+== Quelle / Vorlage
+
+Struktur und HTTP/JSON-Muster übernommen von
+`io.openems.edge.meter.fronius.smartmeter.json` (dieselbe Session) bzw.
+ursprünglich von
+https://github.com/OpenEMS/openems/blob/develop/io.openems.edge.io.shelly/src/io/openems/edge/io/shelly/shellyplus1pm/IoShellyPlus1PmImpl.java
+
+Offizielle SunSpec/Modbus-Referenzimplementierung (zum Vergleich der
+Channel-Nutzung, `ElectricityMeter` + `MeterType.PRODUCTION`):
+https://github.com/OpenEMS/openems/blob/develop/io.openems.edge.fronius/src/io/openems/edge/fronius/pvinverter/PvInverterFroniusImpl.java
+
+Fronius Solar API v1 Dokumentation (`GetInverterRealtimeData.cgi`):
+https://api.library.loxone.com/downloader/file/309/Fronius%20Solar%20API%20V1.pdf
+https://www.fronius.com/en-us/usa/solar-energy/installers-partners/technical-data/all-products/system-monitoring/open-interfaces/fronius-solar-api-json-

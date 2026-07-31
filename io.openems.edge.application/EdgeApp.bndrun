@@ -219,6 +219,7 @@
 	bnd.identity;id='io.openems.edge.victron',\
 	bnd.identity;id='io.openems.edge.weather.openmeteo',\
 	bnd.identity;id='io.openems.edge.meter.fronius.smartmeter.json',\
+	bnd.identity;id='io.openems.edge.pvinverter.fronius.json',\
 	bnd.identity;id='io.openems.edge.pvinverter.hoymiles.opendtu'
 -runbundles: \
 	bcpkix;version='[1.83.0,1.83.1)',\
@@ -497,4 +498,5 @@
 	rrd4j;version='[3.10.0,3.10.1)',\
 	stax2-api;version='[4.2.2,4.2.3)',\
 	io.openems.edge.meter.fronius.smartmeter.json;version=snapshot,\
+	io.openems.edge.pvinverter.fronius.json;version=snapshot,\
 	io.openems.edge.pvinverter.hoymiles.opendtu;version=snapshot
