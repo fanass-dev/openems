@@ -1,0 +1,164 @@
+= Fronius Smart Meter via GEN24 - JSON/HTTP (Solar API v1)
+
+Implementiert einen vollwertigen, asymmetrischen `ElectricityMeter` in
+OpenEMS, der einen an den GEN24 angeschlossenen Fronius Smart Meter über
+die Fronius Solar API ausliest - **ohne Modbus**.
+
+Endpunkt: `http://<gen24-ip>/solar_api/v1/GetMeterRealtimeData.cgi?Scope=Device&DeviceId=0`
+
+Vorher im Browser testen (DeviceId ggf. auf `1` ändern, falls `0` nichts
+liefert):
+
+  http://<gen24-ip>/solar_api/v1/GetMeterRealtimeData.cgi?Scope=Device&DeviceId=0
+
+== Mapping Fronius-Feld -> OpenEMS-Channel
+
+[cols="1,1,1"]
+|===
+|Fronius-Feld |OpenEMS-Channel |Skalierung
+
+|PowerReal_P_Sum        |ACTIVE_POWER          |1:1 (W)
+|PowerReal_P_Phase_1/2/3|ACTIVE_POWER_L1/L2/L3 |1:1 (W)
+|PowerReactive_Q_Sum    |REACTIVE_POWER        |1:1 (var)
+|PowerReactive_Q_Phase_x|REACTIVE_POWER_Lx      |1:1 (var)
+|Voltage_AC_Phase_1/2/3 |VOLTAGE_L1/L2/L3       |x1000 (V -> mV)
+|Ø der drei Phasen      |VOLTAGE                |berechnet
+|Current_AC_Phase_1/2/3 |CURRENT_L1/L2/L3       |x1000 (A -> mA)
+|Current_AC_Sum         |CURRENT                |x1000 (A -> mA)
+|Frequency_Phase_Average|FREQUENCY              |x1000 (Hz -> mHz)
+|EnergyReal_WAC_Sum_Consumed|ACTIVE_PRODUCTION_ENERGY |1:1 (Wh) - siehe Warnung unten, NICHT nach Namen mappen!
+|EnergyReal_WAC_Sum_Produced|ACTIVE_CONSUMPTION_ENERGY|1:1 (Wh) - siehe Warnung unten, NICHT nach Namen mappen!
+|===
+
+Vorzeichen (Fronius) entspricht direkt der OpenEMS-Konvention für
+`MeterType.GRID`: positiv = Bezug aus dem Netz, negativ = Einspeisung.
+Falls dein Zähler es andersrum liefert, `invert=true` in der Config setzen.
+
+CRITICAL - Vorsicht bei Consumed/Produced: Fronius' Feldnamen "Consumed"
+(= Netzbezug) und "Produced" (= Einspeisung) entsprechen NICHT 1:1 den
+gleichnamigen OpenEMS-Channeln! OpenEMS definiert `ACTIVE_PRODUCTION_ENERGY`
+als Integral ueber POSITIVE `ActivePower`-Werte und
+`ACTIVE_CONSUMPTION_ENERGY` als Integral ueber NEGATIVE Werte - unabhaengig
+von der Wortbedeutung. Da bei `MeterType.GRID` positiv = Netzbezug ist,
+landet der Netzbezug (Fronius "Consumed") in `ACTIVE_PRODUCTION_ENERGY` und
+die Einspeisung (Fronius "Produced") in `ACTIVE_CONSUMPTION_ENERGY`. Eine
+frühere Version dieses Bundles hat das nach den Fronius-Feldnamen (statt nach
+der OpenEMS-Definition) gemappt und dadurch Netzbezug/Einspeisung in der
+UI-Historie vertauscht angezeigt, obwohl die Live-Leistungswerte
+(`ActivePower`) korrekt waren.
+
+== Poll-Intervall ("Task is not queued twice")
+
+Der GEN24-Webserver antwortet auf `GetMeterRealtimeData.cgi` oft langsamer
+als die OpenEMS-Cycle-Time (Standard 1 Sekunde). Wird der Request jeden
+Zyklus abgeschickt, obwohl die vorherige Antwort noch nicht da ist, meldet
+der `HttpBridgeCycleService` harmlos per INFO-Log:
+
+[source]
+----
+Process for CycleEndpoint [cycle=1, url=...] is still running. Task is not queued twice
+----
+
+Das ist kein Fehler - der Bridge-Service verhindert nur, dieselbe URL
+mehrfach parallel abzufragen, und wartet einfach auf die laufende Antwort.
+Die Channel-Werte werden trotzdem aktualisiert, nur eben mit der
+Antwortzeit des GEN24 als effektiver Update-Rate statt mit der
+Cycle-Time. Damit das Log nicht unnötig spammt und der GEN24-Webserver
+nicht öfter angefragt wird als nötig, ist die Komponente über
+`pollEveryCycles` (Default `3`) konfigurierbar - der Request wird dann nur
+jeden n-ten Zyklus abgeschickt (`1` = jeden Zyklus, wie zuvor).
+
+== Verzeichnisstruktur
+
+Das Bundle liegt als eigenständiges Projekt direkt im Wurzelverzeichnis
+des OpenEMS-Repos (Bnd-Workspace erkennt jeden Ordner mit `bnd.bnd`
+automatisch als Sub-Projekt - kein Eintrag in `settings.gradle.kts`
+nötig):
+
+[source]
+----
+io.openems.edge.meter.fronius.smartmeter.json/
+├── .classpath
+├── .gitignore
+├── .project
+├── .settings/
+│   └── org.eclipse.core.resources.prefs
+├── bnd.bnd
+├── readme.adoc
+├── src/
+│   └── io/openems/edge/meter/fronius/smartmeter/json/
+│       ├── Config.java
+│       ├── FroniusSmartMeterJson.java
+│       └── FroniusSmartMeterJsonImpl.java
+└── test/
+    └── .gitignore
+----
+
+`bnd.bnd`:
+
+[source]
+----
+Bundle-Name: OpenEMS Edge Meter Fronius Smart Meter (JSON)
+Bundle-Vendor: My Company
+Bundle-License: https://opensource.org/licenses/EPL-2.0
+Bundle-Version: 1.0.0.${tstamp}
+
+-buildpath: \
+	${buildpath},\
+	io.openems.common,\
+	io.openems.common.bridge.http,\
+	io.openems.edge.bridge.http,\
+	io.openems.edge.common,\
+	io.openems.edge.meter.api,\
+
+-testpath: \
+	${testpath}
+----
+
+== Einbau ins Projekt
+
+1. Diesen kompletten Ordner `io.openems.edge.meter.fronius.smartmeter.json/`
+   direkt neben die anderen Edge-Bundles (z. B. neben
+   `io.openems.edge.io.shelly/`) ins Repo-Root legen.
+2. Optional, aber empfehlenswert: In `io.openems.edge.application/EdgeApp.bndrun`
+   das Bundle an zwei Stellen alphabetisch eintragen, damit es beim
+   `resolve`/Build in die lauffähige Edge-Distribution aufgenommen wird:
++
+[source]
+----
+# im -runrequires Block:
+bnd.identity;id='io.openems.edge.meter.fronius.smartmeter.json',\
+
+# im -runbundles Block:
+io.openems.edge.meter.fronius.smartmeter.json;version=snapshot,\
+----
++
+Ohne diesen Schritt lässt sich das Bundle zwar bauen/testen, taucht aber
+nicht automatisch in der fertigen `EdgeApp.jar` auf.
+3. Bundle bauen (`./gradlew :io.openems.edge.meter.fronius.smartmeter.json:build`
+   bzw. in Bndtools/Eclipse importieren), dann in der Edge-Config eine
+   Component-Instanz vom Typ `Meter.Fronius.SmartMeterJson` anlegen: IP
+   des GEN24, Device-ID (Default "0"), Meter-Type (Default GRID).
+4. Damit die Werte von Standard-Controllern genutzt werden (z. B.
+   `Controller.Ess.GridOptimizedCharge` erwartet einen Component mit
+   `MeterType.GRID`), einfach diese Komponente als "Grid-Meter" in der
+   jeweiligen Controller-Config referenzieren - sie verhält sich wie jeder
+   andere `ElectricityMeter` in OpenEMS.
+
+== Bekannte Einschränkungen
+
+* `PowerFactor_*`, `PowerApparent_*`, `Meter_Location_Current`,
+  `EnergyReal_WAC_Plus/Minus_Absolute` werden aktuell nicht gemappt - bei
+  Bedarf leicht nach demselben Muster ergänzbar.
+* Bei Ausfall/Nichterreichbarkeit des GEN24 werden alle Channels auf
+  `null` gesetzt und `SLAVE_COMMUNICATION_FAILED` gesetzt; es gibt (bewusst)
+  keinen Retry/Backoff - das übernimmt intern bereits der
+  `BridgeHttp`-Cycle-Service.
+
+== Quelle / Vorlage
+
+Struktur und HTTP/JSON-Muster übernommen von
+https://github.com/OpenEMS/openems/blob/develop/io.openems.edge.io.shelly/src/io/openems/edge/io/shelly/shellyplus1pm/IoShellyPlus1PmImpl.java
+
+Fronius Solar API v1 Dokumentation (GetMeterRealtimeData.cgi):
+https://www.fronius.com/en-us/usa/solar-energy/installers-partners/technical-data/all-products/system-monitoring/open-interfaces/fronius-solar-api-json-
