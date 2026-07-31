@@ -1,0 +1,687 @@
+= Fronius Batteriespeicher (ESS) via JSON/HTTP (Solar API v1 + Steuerung)
+
+Implementiert ein `ManagedSymmetricEss` in OpenEMS für den Batteriespeicher
+eines Fronius Hybrid-Wechselrichters (GEN24 oder Symo Hybrid) - **ohne
+Modbus/SunSpec**:
+
+* **Lesen** (immer aktiv, offiziell dokumentiert): SoC, Leistung, Kapazität,
+  Zellgesundheit über die Fronius Solar API v1 (`GetStorageRealtimeData.cgi`).
+* **Schreiben/Steuern** (optional, `ControlMode != READ_ONLY`, **inoffiziell
+  und undokumentiert**): Lade-/Entladesteuerung über die Web-Config-API des
+  GEN24-Webinterfaces (Digest-Auth über HTTP) - siehe eigener Abschnitt
+  unten, unbedingt vor Produktivbetrieb lesen.
+
+Endpunkt: `http://<inverter-ip>/solar_api/v1/GetStorageRealtimeData.cgi?Scope=Device&DeviceId=0`
+
+Vorher im Browser testen:
+
+  http://<inverter-ip>/solar_api/v1/GetStorageRealtimeData.cgi?Scope=Device&DeviceId=0
+
+Verfügbarkeit laut Fronius: Hybrid-Geräte ab HybridManager 1.1.2-13, GEN24 ab
+Firmware 1.13.
+
+== Steuerung: Wozu, und warum "inoffiziell"?
+
+Die offizielle, dokumentierte Fronius Solar API kann den Speicher nur
+auslesen - kein Hersteller-Endpunkt zum Schreiben ist dokumentiert. Der
+einzige bekannte Weg, den Speicher ohne Modbus/SunSpec (das auf dem GEN24
+bekannte Bugs hat, siehe
+https://community.openems.io/t/laden-entladen-am-fronius-symo-gen24-hybridwechselrichter-mit-modbus/1549)
+aktiv zu steuern, ist die **inoffizielle, undokumentierte Web-Config-API**
+des GEN24-Webinterfaces - dieselbe API, die auch die Fronius-eigene
+Weboberfläche und Drittprojekte wie
+https://github.com/muexxl/batcontrol[batcontrol] und
+https://github.com/evcc-io/evcc[evcc] verwenden. Dieses Bundle bildet daher
+**beide Rollen in einer Component** ab: `ManagedSymmetricEss` (statt nur
+`SymmetricEss`), damit Standard-OpenEMS-Controller
+(`Controller.Ess.Balancing`, `Controller.Ess.FixActivePower`,
+`Controller.Ess.GridOptimizedCharge`, ...) diese Component ganz normal als
+Sollwertgeber verwenden können.
+
+[WARNING]
+====
+Diese Web-Config-API ist von Fronius nicht dokumentiert, nicht offiziell
+unterstützt und kann sich mit jedem Firmware-Update ändern oder ganz
+wegfallen (siehe die entsprechende Diskussion:
+https://github.com/evcc-io/evcc/discussions/21472). Sie überschreibt außerdem
+die eigene Zeit-/Energiemanagement-Logik des Wechselrichters. Anders als bei
+den beiden reinen Lese-Bundles (Meter, PV-Inverter) schreibt dieses Bundle im
+Steuerungsmodus **aktiv Befehle an ein laufendes Batteriesystem** - teste
+das unbedingt zunächst vorsichtig (z. B. mit `Controller.Debug.Log` statt
+einem echten Regel-Controller, kleine Leistungswerte, Beobachtung im
+Fronius-Webinterface) bevor du es produktiv/automatisiert einsetzt.
+Standardmäßig ist `ControlMode = READ_ONLY` gesetzt - **es wird nie etwas
+geschrieben, bis du das explizit umstellst.**
+====
+
+== Warum ein separates Bundle statt "HybridEss"
+
+Der GEN24 ist intern ein Hybrid-Gerät (PV + Speicher + Netzanschluss in
+einem Gehäuse), OpenEMS kennt dafür die Nature `HybridEss` (kombinierte
+AC-Leistung an einem gemeinsamen Netzanschlusspunkt, um Doppelzählung zu
+vermeiden). Da du PV-Erzeugung und Netz/Zähler bereits über zwei eigene,
+unabhängige Bundles abbildest
+(`io.openems.edge.pvinverter.fronius.json` bzw.
+`io.openems.edge.meter.fronius.smartmeter.json`), folgt dieses ESS-Bundle
+demselben, einfacheren Standard-Modellierungsmuster: **drei unabhängige
+Components** (Meter + PV-Inverter + Ess) für ein physisch kombiniertes
+Gerät - genau wie es auch das offizielle OpenEMS-"Getting started"-Tutorial
+mit Simulator-Komponenten vorschlägt.
+
+== Flaches JSON (anders als beim PV-Wechselrichter!)
+
+Mit `Scope=Device` liefert dieser Endpunkt - anders als
+`GetInverterRealtimeData.cgi` - wieder **flache** Zahlen direkt unter
+`Body.Data.Controller.<Feld>`, **nicht** verschachtelt in
+`{Value, Unit}`-Objekte:
+
+[source,json]
+----
+{
+  "Body": {
+    "Data": {
+      "Controller": {
+        "Details": { "Manufacturer": "BYD", "Model": "BYD Battery-Box Premium HV", "Serial": "..." },
+        "Enable": 1,
+        "StateOfCharge_Relative": 65.9,
+        "Capacity_Maximum": 7800,
+        "DesignedCapacity": 7800,
+        "Current_DC": 0.8,
+        "Voltage_DC": 321.3,
+        "Temperature_Cell": 16.0,
+        "Status_BatteryCell": 3,
+        "TimeStamp": 1650606867
+      },
+      "Modules": []
+    }
+  }
+}
+----
+
+Ist der angeschlossene Batterietyp von der Solar-API-Version nicht
+unterstützt, liefert Fronius `"Body":{"Data":{}}` mit
+`Head.Status.Code=255` - dieses Bundle erkennt das (fehlendes
+`Controller`-Objekt) und setzt dann nur `SLAVE_COMMUNICATION_FAILED`,
+statt einen Fehler zu werfen.
+
+== Steuerungsmechanik im Detail
+
+=== Authentifizierung: Digest-Auth mit Rolling Nonce
+
+Die Web-Config-API verlangt HTTP Digest-Auth (nicht Basic-Auth):
+
+1. Erste Anfrage ohne `Authorization`-Header -> Antwort `401` mit einem
+   Nonce (`WWW-Authenticate`, teils auch nur `X-WWW-Authenticate`/
+   `X-Www-Authenticate` - Schreibweise je Firmware unterschiedlich).
+   Realm ist fest `"Webinterface area"`.
+2. Client berechnet `HA1 = hash(user:realm:passwort)`,
+   `HA2 = hash(methode:pfad)`,
+   `response = hash(HA1:nonce:nc:cnonce:qop:HA2)` und sendet das im
+   `Authorization: Digest ...`-Header (inkl. `qop=auth`, achtstelligem
+   `nc`-Zähler, zufälligem `cnonce`).
+3. Bei Erfolg liefert Fronius **erneut** einen (neuen) Nonce im selben,
+   nicht-standardkonformen Header zurück, der für den nächsten
+   Schreibvorgang verwendet werden muss ("Rolling Nonce") - `nonce`/
+   `cnonce`/`nc` werden deshalb zwischen Aufrufen im Bundle zwischengespeichert
+   (`FroniusControlClient`).
+
+Hash-Algorithmus ist **firmwareabhängig**: MD5 unterhalb Firmware
+`1.38.6-1`, SHA-256 ab `1.38.6-1`. Ebenso die Endpunkt-Pfade: unterhalb
+Firmware `1.36` ohne `/api`-Prefix (`/config/batteries`, `/status/version`,
+...), ab `1.36` mit (`/api/config/batteries`, `/api/status/version`, ...).
+Das Bundle ermittelt beides automatisch beim ersten Schreibversuch über
+`GET /api/status/version` (unauthentifiziert).
+
+Diese ganze Handshake-Logik ist eine Java-Neuimplementierung des in Python
+geschriebenen, quelloffenen https://github.com/muexxl/batcontrol[batcontrol]-
+Projekts (`src/batcontrol/inverter/fronius.py`) - der einzigen bekannten
+öffentlichen "Dokumentation" dieser API.
+
+=== Zwei Steuerungsmodi (`controlMode`-Konfigurationsfeld)
+
+[cols="1,2,2"]
+|===
+|Modus |Mechanik |Charakter des Sollwerts
+
+|`READ_ONLY` (Standard) |Keine Schreibzugriffe. `applyPower()` tut nichts. |-
+|`SCHEDULE_BASED` |Schreibt **einen** Time-of-Use-Eintrag über
+`POST /api/config/timeofuse` (00:00-23:59, alle Wochentage) |**Ober-/
+Untergrenze**, kein erzwungener Momentanwert
+|`GRID_POWER_TARGET` |Schreibt `HYB_EM_POWER`/`HYB_EM_MODE=1` über
+`POST /api/config/batteries` |**Exakter Netz-Sollwert am
+Netzanschlusspunkt** (nicht Batterieleistung!)
+|===
+
+**`SCHEDULE_BASED` (empfohlen)** - `applyPower(activePower, _)` wird wie
+folgt übersetzt (OpenEMS-Konvention: negativ = laden, positiv = entladen):
+
+* `activePower <= -50 W` (laden gewollt) -> `ScheduleType=CHARGE_MIN`,
+  `Power=|activePower|`: erzwingt eine **Mindest**-Ladeleistung (notfalls aus
+  dem Netz, wenn PV nicht reicht).
+* `activePower >= 50 W` (entladen gewollt) -> `ScheduleType=DISCHARGE_MAX`,
+  `Power=activePower`: setzt eine **Obergrenze** für die Entladeleistung -
+  der Speicher entlädt nur so viel, wie der Hausverbrauch tatsächlich
+  abruft, **nicht** garantiert exakt dieser Wert.
+* Nahe Null -> `ScheduleType=DISCHARGE_MAX`, `Power=0`: nächstmögliche
+  Annäherung an "0 W" (Entladen sperren).
+
+Es wird also **immer nur eine** Regel gleichzeitig geschrieben (kein
+kombiniertes Laden+Entladen-Limit in einem Aufruf) - genau wie es
+batcontrol vormacht.
+
+WICHTIG: `POST /api/config/timeofuse` **ersetzt die komplette Zeitsteuerung**
+des Geräts, nicht nur einen einzelnen Eintrag. Falls du vor der Aktivierung
+dieses Bundles bereits eigene Time-of-Use-Regeln im Fronius-Webinterface
+angelegt hattest, würden diese sonst beim ersten Schreibvorgang unwiederbringlich
+gelöscht. Das Bundle sichert deshalb automatisch die zum Aktivierungszeitpunkt
+bestehende Zeitsteuerung (siehe "Backup/Restore bestehender Zeitsteuerung"
+unten), bevor es zum ersten Mal selbst schreibt.
+
+**`GRID_POWER_TARGET` (nur für erfahrene Nutzer)** - `activePower` wird 1:1
+als `HYB_EM_POWER` (manueller Modus, `HYB_EM_MODE=1`) geschrieben. **Wichtig:**
+das ist ein Sollwert **am Netzanschlusspunkt der gesamten Anlage**
+(PV + Speicher + Netz kombiniert), nicht die Batterieleistung selbst! Ein
+Standard-Ess-Controller wie `Controller.Ess.Balancing` berechnet seinen
+Sollwert aber als gewünschte **Batterieleistung** - in diesem Modus bekommt
+der Wert also eine andere Bedeutung als vom Controller beabsichtigt. Diesen
+Modus daher nur mit einem selbst geschriebenen, darauf abgestimmten
+Controller verwenden, nicht mit den Standard-Ess-Controllern.
+
+=== Sicherheitsmechanismen im Bundle
+
+* **Entkoppelter Schreib-Thread**: `applyPower()` selbst speichert den
+  Sollwert nur schnell/nicht-blockierend zwischen (Vorgabe des
+  `ManagedSymmetricEss`-Interfaces); der eigentliche, langsame
+  Digest-Auth-HTTP-Schreibvorgang läuft alle 5 Sekunden in einem separaten
+  Hintergrund-Thread, nicht im OpenEMS-Cycle-Worker.
+* **Totzone** (`writeDeadbandWatt`, Standard 100 W) und **Mindestabstand**
+  (`minWriteIntervalSeconds`, Standard 15 s) verhindern, dass bei staendig
+  leicht schwankendem Sollwert ständig neu geschrieben wird.
+* **Schreib-Verifikation**: Fronius bestätigt jeden erfolgreichen Schreibwert
+  explizit im `writeSuccess`-Array der Antwort - das Bundle prüft das und
+  meldet einen Fehler (`ApplyPowerFailed`-Channel), falls ein Wert nicht
+  bestätigt wurde, auch wenn die HTTP-Antwort `200` war.
+* **Backup/Restore bestehender Zeitsteuerung** (nur `SCHEDULE_BASED`): beim
+  ersten Schreibversuch nach der Aktivierung liest das Bundle per GET die zu
+  diesem Zeitpunkt auf dem Gerät aktive Zeitsteuerung aus und sichert sie in
+  einer lokalen Datei `fronius-ess-<Component-ID>-timeofuse-backup.json`
+  (analog zu `backup_time_of_use()`/`restore_time_of_use_config()` in
+  batcontrol) - aber nur, falls diese Datei nicht schon existiert (schützt
+  vor einem Edge-Neustart mitten im Betrieb, der sonst die eigene, bereits
+  aktive Regel fälschlich als "Original" sichern würde). Beim Deaktivieren
+  der Component wird die gesicherte Zeitsteuerung automatisch wieder
+  geschrieben und die Backup-Datei anschließend gelöscht. Schlägt das
+  Sichern oder Wiederherstellen fehl, wird nichts überschrieben bzw. die
+  Backup-Datei bewusst nicht gelöscht - eine Warnung im Log verweist dann
+  auf die manuelle Prüfung im Fronius-Webinterface.
+* **Automatik-Rücksetzung beim Beenden**: falls keine Zeitsteuerung
+  wiederhergestellt wurde (kein Backup vorhanden oder Restore fehlgeschlagen),
+  versucht das Bundle zusätzlich best-effort, die zuletzt geschriebene eigene
+  Regel zu deaktivieren bzw. `HYB_EM_MODE` auf `0` (automatisch)
+  zurückzusetzen - damit eine entfernte/gestoppte Component den Speicher
+  nicht dauerhaft im manuellen Modus stehen lässt. Das ist best-effort (kein
+  Retry) - im Zweifel im Fronius-Webinterface prüfen.
+* **Backoff bei Fehlern**: jeder der drei Schreib-/Lesepfade (Time-of-Use-
+  Schreiben, Time-of-Use-Backup, `HYB_EVU_CHARGEFROMGRID`) hat einen eigenen
+  exponentiellen Backoff (Start 5 s, verdoppelt sich pro Fehlschlag, Deckel
+  bei 5 min) statt bei jedem 5-Sekunden-Zyklus erneut anzufragen. Grund:
+  Fronius' GEN24-Firmware sperrt Logins nach mehreren fehlgeschlagenen
+  Versuchen offenbar vorübergehend komplett (auch für das normale
+  Webinterface) - ungebremstes Retry-Verhalten würde eine solche Sperre nur
+  auslösen bzw. verlängern, statt dem Gerät Zeit zur Erholung zu geben. Bei
+  Erfolg wird der Backoff sofort wieder zurückgesetzt.
+* Fehler werden über den bereits vorhandenen `ManagedSymmetricEss`-Channel
+  `ApplyPowerFailed` gemeldet (kein neuer Channel nötig), zusätzlich über
+  den Diagnose-Channel `LastControlAction` (Klartext, letzte gesendete
+  Aktion bzw. letzter Fehler).
+
+=== Pflicht-Kanäle für den Power-Solver (AllowedChargePower, AllowedDischargePower, MaxApparentPower)
+
+Ohne diese drei Kanäle erzwingt der OpenEMS-Power-Solver für dieses Ess
+IMMER einen Sollwert von 0 W - unabhängig davon, welcher Controller aktiv
+ist oder was er anfordert. Das war die Ursache für das Symptom "Max
+Entladeleistung: 0" im Webinterface, das auch nach Aktivieren des
+Balancing-Controllers und echtem Netzbezug bestehen blieb.
+
+**Root Cause** (verifiziert im OpenEMS-Quellcode, nicht geraten): Die
+Methode `createGenericEssConstraints()` in
+`io.openems.edge.ess.core.power.v1.data.ConstraintUtil` baut für JEDEN
+`ManagedSymmetricEss` in JEDEM Solver-Zyklus zwei Constraints:
+
+[source,java]
+----
+result.add(createSimpleConstraint(coefficients, ess.id() + ": Allowed Charge",
+        ess.id(), ALL, ACTIVE, GREATER_OR_EQUALS,
+        ess.getAllowedChargePower().orElse(0)));
+
+result.add(createSimpleConstraint(coefficients, ess.id() + ": Allowed Discharge",
+        ess.id(), ALL, ACTIVE, Relationship.LESS_OR_EQUALS,
+        ess.getAllowedDischargePower().orElse(0)));
+----
+
+Wird der Kanal nie gesetzt, liefert `.orElse(0)` den Wert 0 - der Solver
+bekommt dadurch gleichzeitig `ActivePower >= 0` UND `ActivePower <= 0` als
+bindende Nebenbedingung, was den Sollwert rechnerisch auf exakt 0 W fixiert.
+Das betrifft jeden Controller gleichermaßen, auch Balancing.
+
+Die Fronius Solar API (`GetStorageRealtimeData.cgi`) liefert diese Werte
+nicht - ihr `Controller`-Objekt enthält nur Ladezustand, Spannung, Strom,
+Kapazität und Zelltemperaturen, aber keinerlei Leistungsgrenzwerte (siehe
+https://manuals.plus/m/7d638f5b3435943ccd44d7c6121da568a516c9a4a5cccf36e278601c3a244339.pdf[Fronius
+Solar API V1 Dokumentation]). Die Werte müssen daher aus dem Typenschild
+bzw. Datenblatt von Wechselrichter und Batterie stammen und sind seit
+dieser Version über drei neue, editierbare Config-Felder einstellbar -
+NICHT im Code fest verdrahtet:
+
+[cols="1,1,2"]
+|===
+|Config-Feld |Standardwert |Bedeutung
+
+|`batteryMaxChargePowerWatt`
+|11682 W
+|Wird als `AllowedChargePower` gemeldet (intern automatisch negativ
+gesetzt). Richtwert aus dem Fronius-Datenblatt "Symo GEN24 12.0 Plus SC",
+Feld "Max. AC charging power, depending on connected battery".
+
+|`batteryMaxDischargePowerWatt`
+|12000 W
+|Wird als `AllowedDischargePower` gemeldet. Richtwert aus dem
+Fronius-Datenblatt, Feld "Max. output power (Pac max)".
+
+|`maxApparentPowerVoltAmpere`
+|12000 VA
+|Wird als `MaxApparentPower` gemeldet. Ebenfalls aus dem
+Fronius-Datenblatt, Feld "Max. output power".
+|===
+
+Quellen für die Standardwerte:
+https://www.fronius.com/en/help-center/solar-energy/products/solar-inverters/gen24/symo-gen24-plus/fronius-symo-gen24-12-0-plus-sc[Fronius
+Produktseite Symo GEN24 12.0 Plus SC],
+https://solar-distribution.baywa-re.de/out/media/22-Symo_GEN24_SC_SE_Product_Documents_Datasheet_Fronius_Symo_GEN24_SC_12_kW_EN_EN-English.pdf[BayWa
+r.e. Datenblatt PDF].
+
+WICHTIG: Der Wert 11682 W ist eine generische Fronius-Angabe für die
+maximale AC-Ladeleistung "je nach angeschlossener Batterie" - er wurde NICHT
+speziell für eine BYD Battery-Box Premium HVM bestätigt gefunden. Für eine
+BYD HVM 16.6 (6 Module, 16,56 kWh nutzbar, die dem angegebenen "16,4 kWh"
+am nächsten kommende Standardkonfiguration) liegt die batterie-eigene
+Strom-/Spannungsgrenze (50 A bei ca. 307 V nominal) sogar deutlich höher
+(ca. 15 kW) - der Wechselrichter ist hier also die engere Grenze. Ein
+Inverter-Hersteller-Datenblatt (SMA) nennt für andere Wechselrichter mit
+BYD HVM 16.6 Ladeleistungen von 7,4-10 kW und Entladeleistungen von
+8,7-10,6 kW
+(https://files.sma.de/downloads/STPSE-Batteries-TI-en-13.pdf[SMA
+STPSE-Batteries-TI PDF]) - diese Werte sind aber SMA-spezifisch und nicht
+direkt auf die Fronius-GEN24-Kombination übertragbar. Die Standardwerte in
+dieser Config sind daher als Startpunkt zu verstehen: unbedingt gegen das
+eigene Typenschild bzw. das Fronius-Inbetriebnahmeprotokoll prüfen und bei
+Abweichung über die Konfiguration anpassen.
+
+HINWEIS zu einer OpenEMS-API-Eigenheit: Anders als `AllowedDischargePower`
+und `MaxApparentPower` bietet das `ManagedSymmetricEss`-Interface fuer
+`AllowedChargePower` KEINE `_setAllowedChargePower()`-Komfortmethode (verifiziert
+im Quellcode von `io.openems.edge.ess.api.ManagedSymmetricEss`) - das Bundle setzt
+diesen Kanal daher direkt ueber `getAllowedChargePowerChannel().setNextValue(...)`.
+
+Da diese Werte statische Eigenschaften der Hardware sind (keine
+Live-Telemetrie), setzt das Bundle sie einmalig in `activate()` - laut
+OpenEMS-Kanalimplementierung (`AbstractReadChannel.nextProcessImage()`)
+behält ein Kanal seinen zuletzt gesetzten Wert unverändert bei, bis er
+erneut explizit gesetzt wird; ein wiederholtes Setzen pro Zyklus ist daher
+nicht nötig. Nach einer Änderung der drei Felder ist ein Neustart der
+Component bzw. von Edge erforderlich (kein `@Modified`-Hot-Reload
+implementiert).
+
+=== Schutz gegen "kein Controller aktiv" (SCHEDULE_BASED / GRID_POWER_TARGET)
+
+**Symptom:** Sobald `controlMode` auf `SCHEDULE_BASED` oder `GRID_POWER_TARGET`
+steht, aber (noch) kein Controller fuer dieses Ess aktiv bzw. im Scheduler
+eingetragen ist, wurde `DISCHARGE_MAX 0` dauerhaft an Fronius geschrieben und
+die Entladung damit permanent blockiert - obwohl das eigentlich niemand so
+wollte.
+
+**Root Cause** (verifiziert im OpenEMS-Quellcode, nicht geraten): Der
+Power-Solver ruft `applyPower(activePower, reactivePower)` fuer JEDEN
+`ManagedSymmetricEss` in JEDEM Zyklus auf - unabhaengig davon, ob ueberhaupt
+ein Controller aktiv ist. Ist keiner aktiv, liefert der Solver seinen
+neutralen Default von 0 W. Dieser Wert ist anhand seines Betrags allein nicht
+von einer echten Controller-Anfrage nach ~0 W (z. B. Balancing bei bereits
+ausgeglichenem Netzbezug) zu unterscheiden - unsere `applyScheduleBased()`
+behandelte beide Faelle bisher identisch im Zweig "nahe Null" und schrieb
+unbedingt `DISCHARGE_MAX 0`.
+
+**Fix:** `applyPower()` prueft jetzt vor jeder Verarbeitung die drei
+eigenen Write-Kanaele `SetActivePowerEquals`, `SetActivePowerGreaterOrEquals`
+und `SetActivePowerLessOrEquals` mittels `getNextWriteValueAndReset()`. Ein
+aktiver Controller (z. B. `Controller.Ess.Balancing`, das in jedem Zyklus
+unbedingt `setActivePowerEqualsWithFilter()` aufruft) setzt in jedem Zyklus
+mindestens einen dieser Kanaele, BEVOR der Solver `applyPower()` aufruft -
+denn die eigentliche Solver-Constraint wird von `PowerConstraint` bereits beim
+Setzen des Kanals (`onSetNextWrite()`-Callback) aus dem uebergebenen Wert
+gebaut, nicht spaeter erneut aus dem Kanal ausgelesen. Ein wiederholtes
+Auslesen/Zuruecksetzen dieser drei Kanaele durch unser eigenes Bundle ist
+daher unschaedlich fuer den Solver (verifiziert: `getNextWriteValueAndReset()`
+wird sonst im gesamten Repository fuer diese Kanaele nirgends ausserhalb von
+Test-Code aufgerufen).
+
+Sind alle drei Kanaele in einem Zyklus leer, hat kein Controller in diesem
+Zyklus tatsaechlich einen Sollwert fuer dieses Ess gesetzt - der vom Solver
+uebergebene Wert ist dann nur der Framework-Default. In diesem Fall
+ueberspringt `applyPower()` die gesamte Schreiblogik fuer diesen Zyklus
+vollstaendig (verhaelt sich wie `READ_ONLY`), anstatt `DISCHARGE_MAX 0` zu
+schreiben. Sobald wieder mindestens ein Controller aktiv ist, greift die
+bisherige Logik unveraendert. Eine einmalige Warnung wird im Log ausgegeben,
+solange dieser Zustand anhaelt (`unmanagedWarningLogged`-Flag, verhindert
+Log-Spam pro Zyklus).
+
+=== Saisonale Nutzung mit Standard-OpenEMS-Controllern
+
+`ManagedSymmetricEss` sagt nichts über die *Absicht* hinter einem
+Sollwert aus - `applyPower()` bekommt immer nur eine einzige, bereits von
+der OpenEMS-Power-Engine aufgelöste Watt-Zahl, unabhängig davon, welcher
+Controller sie letztlich verursacht hat. Zwei fertige Standard-Controller
+decken genau das eingangs beschriebene Szenario ab, haben aber
+gegensätzliche Erwartungen an eine Lade-Anforderung:
+
+[cols="1,2,1"]
+|===
+|Jahreszeit |Controller |Erwartung an CHARGE_MIN
+
+|Frühjahr-Herbst |`Controller.Ess.GridOptimizedCharge` (verzögert Ladung
+anhand PV-/Verbrauchsprognose bis zu einer Zielzeit, z. B. 17:00 Uhr;
+erzwingt bei Bedarf früheres Laden nur um Einspeisebegrenzung/Abregelung zu
+vermeiden) |Reine **Kappung** des PV-Überschusses - **nie** aus dem Netz
+nachladen
+|Winter |`Controller.Ess.Time-Of-Use-Tariff`, Modus `CHARGE_CONSUMPTION`
+(plant anhand Day-Ahead-Preisen einen 24h-Fahrplan in 15-Minuten-Schritten,
+lädt gezielt in günstigen Preisfenstern) |**Erzwungener** Zielwert, darf
+auch aus dem Netz kommen (z. B. nachts ohne PV)
+|===
+
+Damit `CHARGE_MIN` in beiden Fällen das Richtige tut, gibt es das
+Konfigurationsfeld `allowGridCharging`, das unabhängig vom Sollwert selbst
+das Fronius-Flag `HYB_EVU_CHARGEFROMGRID` setzt:
+
+* `allowGridCharging = false` (Standard, für Frühjahr-Herbst mit
+  `GridOptimizedCharge`): `CHARGE_MIN` wirkt real nur als Kappung - reicht
+  der PV-Überschuss kurzfristig nicht, wird trotzdem **nicht** aus dem Netz
+  nachgezogen.
+* `allowGridCharging = true` (für den Winter mit `Time-Of-Use-Tariff` /
+  `CHARGE_CONSUMPTION`): `CHARGE_MIN` darf den Sollwert auch durch
+  Netzbezug erfüllen.
+
+Aktuell **manuell** umschalten (z. B. zwei openEMS-Konfigurationen für
+Controller + `allowGridCharging`, die du im Frühjahr/Herbst tauschst). Eine
+automatische, jahreszeit- oder KI-basierte Umschaltung ist bewusst noch
+nicht umgesetzt - möglicher späterer Ausbauschritt, sobald der manuelle
+Betrieb sich bewährt hat.
+
+Das Flag wird beim Start der Steuerung einmalig geschrieben (nicht bei
+jedem Schreibvorgang) und bei einem fehlgeschlagenen Versuch automatisch im
+nächsten Kontrollzyklus wiederholt.
+
+=== Zugangsdaten
+
+Die Web-Config-API verlangt einen Login mit Benutzername/Passwort der
+GEN24-Weboberfläche. Standard-Benutzername ab Werk ist `customer`
+(Standard-Vorgabe in diesem Bundle) - Passwort ist das deines
+Service-Zugangs zur GEN24-Weboberfläche (`http://<ip>/`, Login-Bereich
+"Einstellungen"). Beide Felder sind in der Config frei änderbar; das
+Passwort-Feld ist als `PASSWORD`-Typ markiert (wird in der OpenEMS-UI/
+Webconsole nicht im Klartext angezeigt).
+
+== Mapping Fronius-Feld -> OpenEMS-Channel
+
+[cols="1,1,1"]
+|===
+|Fronius-Feld (`Controller`) |OpenEMS-Channel |Skalierung/Hinweis
+
+|StateOfCharge_Relative |SOC |1:1 (%)
+|Capacity_Maximum |CAPACITY |1:1 (Wh) - aktuelle, ggf. alterungsbedingt reduzierte Maximalkapazität
+|DesignedCapacity |DESIGNED_CAPACITY (Custom-Channel) |1:1 (Wh) - Nennkapazität bei Auslieferung
+|Voltage_DC x Current_DC |ACTIVE_POWER |siehe Vorzeichen-Hinweis unten
+|Voltage_DC |DC_VOLTAGE (Custom-Channel) |x1000 (V -> mV)
+|Current_DC |DC_CURRENT (Custom-Channel) |x1000 (A -> mA)
+|Voltage_DC_Minimum_Cell |MIN_CELL_VOLTAGE |x1000 (V -> mV)
+|Voltage_DC_Maximum_Cell |MAX_CELL_VOLTAGE |x1000 (V -> mV)
+|Temperature_Cell_Minimum |MIN_CELL_TEMPERATURE |1:1 (°C) - nicht bei jedem Batterietyp vorhanden
+|Temperature_Cell_Maximum |MAX_CELL_TEMPERATURE |1:1 (°C) - nicht bei jedem Batterietyp vorhanden
+|Enable |BATTERY_ENABLED (Custom-Channel) |1/0 -> Boolean
+|Status_BatteryCell |STATUS_BATTERY_CELL (Custom-Channel) |roh, Bedeutung herstellerspezifisch (siehe unten)
+|Details.Manufacturer/Model/Serial |BATTERY_MANUFACTURER/_MODEL/_SERIAL (Custom-Channel) |String
+|===
+
+Zusätzliche Diagnose-Channels (nur relevant wenn `ControlMode != READ_ONLY`,
+vorher `undefined`):
+
+[cols="1,1"]
+|===
+|OpenEMS-Channel |Bedeutung
+
+|FIRMWARE_VERSION (Custom-Channel) |Erkannte GEN24-Firmware-Version (aus `/api/status/version`), bestimmt Hash-Algorithmus/Endpunkt-Pfade
+|LAST_CONTROL_ACTION (Custom-Channel) |Klartext-Beschreibung des letzten tatsächlich gesendeten Schreibbefehls bzw. letzter Fehler
+|ApplyPowerFailed (`ManagedSymmetricEss`-Standard-Channel) |`true` wenn der letzte Schreibversuch fehlgeschlagen ist/nicht bestätigt wurde
+|===
+
+Nicht gesetzt (von diesem Endpunkt nicht geliefert):
+
+* `GRID_MODE` - die Solar API liefert an dieser Stelle keine
+  Netz-Status-Information; der Channel bleibt `UNDEFINED` (Standardwert).
+* `REACTIVE_POWER` - keine Blindleistungsdaten in `GetStorageRealtimeData.cgi`.
+* `ALLOWED_CHARGE_POWER`, `ALLOWED_DISCHARGE_POWER`, `MAX_APPARENT_POWER` -
+  von der Solar API ebenfalls nicht geliefert, werden seit dieser Version
+  aber einmalig aus den Config-Feldern `batteryMaxChargePowerWatt` /
+  `batteryMaxDischargePowerWatt` / `maxApparentPowerVoltAmpere` gesetzt -
+  siehe "Pflicht-Kanaele fuer den Power-Solver" oben. Ohne diese Werte
+  wuerde der OpenEMS-Power-Solver den Sollwert immer auf 0 W zwingen.
+* `ACTIVE_CHARGE_ENERGY` / `ACTIVE_DISCHARGE_ENERGY` - dieser Endpunkt liefert
+  keine kumulierten Lade-/Entlade-Energiezähler; falls du diese Werte
+  brauchst, mit `CalculateEnergyFromPower` aus `ACTIVE_POWER` selbst
+  integrieren (Standard-OpenEMS-Baustein).
+
+== Wichtig: Vorzeichen und AC- vs. DC-Leistung
+
+Fronius dokumentiert `Current_DC` explizit als "battery output current
+(+ charging)" - also **positiv beim Laden**. OpenEMS erwartet bei
+`SymmetricEss.ACTIVE_POWER` das Gegenteil: **negativ beim Laden, positiv
+beim Entladen**. Das Bundle rechnet deshalb:
+
+  ACTIVE_POWER = -(Voltage_DC * Current_DC)
+
+Das ist die **DC-Leistung an den Batterieklemmen**, nicht die AC-Leistung
+am Netzanschlusspunkt - Wandlerverluste (i. d. R. wenige Prozent) sind hier
+nicht enthalten. Für reine Beobachtung (SoC-Verlauf, Lade-/Entladezyklen in
+Grafana) ist das mehr als ausreichend genau.
+
+== Lade-/Entladeenergie (`ActiveChargeEnergy`/`ActiveDischargeEnergy`)
+
+**Wichtig, falls Beladung/Entladung in der History-Ansicht 0 kWh anzeigen:**
+Anders als z. B. bei `ElectricityMeter` (dessen `ActiveProductionEnergy`/
+`ActiveConsumptionEnergy` automatisch aus `ActivePower` integriert werden)
+sind `SymmetricEss.ACTIVE_CHARGE_ENERGY` und `ACTIVE_DISCHARGE_ENERGY` reine
+Channels ohne automatische Berechnung - jede Ess-Implementierung muss sie
+selbst befüllen (siehe z. B. das eingebaute `Ess.Samsung`-Bundle als
+Vorlage). Dieses Bundle tut das über `CalculateEnergyFromPower`, aufgerufen
+bei jedem `ACTIVE_POWER`-Update mit der oben beschriebenen
+OpenEMS-Vorzeichenkonvention (negativ = Laden, positiv = Entladen). Dafür
+wird optional eine `Timedata`-Referenz (typischerweise `Timedata.Rrd4j`)
+gebunden, damit die kumulierten Wh-Werte einen Neustart des Edge überleben,
+statt bei jedem Neustart wieder bei 0 zu beginnen.
+
+== Status_BatteryCell - Bedeutung je Hersteller
+
+Der Rohwert ist geräteabhängig zu interpretieren:
+
+[cols="1,1,1"]
+|===
+|Wert |BYD Battery-Box |LG-Chem Resu H
+
+|0 |Standby |-
+|1 |Inactive |Standby
+|2 |Darkstart |-
+|3 |Active |Enabled
+|4 |Fault |-
+|5 |Updating |Faulted
+|10 |- |Sleep
+|===
+
+(Bei der Fronius Solar Battery selbst codiert `Status_BatteryCell` stattdessen
+einen Zellstatus als Hex-Byte je Modul - siehe offizielle Solar-API-Doku,
+Abschnitt "Modules", falls relevant für dich.)
+
+== Poll-Intervall
+
+Gleiches Prinzip wie bei den anderen beiden Bundles: `pollEveryCycles`
+(Default `3`) steuert, wie oft (in Vielfachen der OpenEMS-Cycle-Time) der
+Speicher abgefragt wird. Beobachte nach dem Import zunächst denselben Wert
+wie bei deinen anderen beiden Fronius-Components und passe bei Bedarf an.
+
+== Verzeichnisstruktur
+
+[source]
+----
+io.openems.edge.ess.fronius.json/
+├── .classpath
+├── .gitignore
+├── .project
+├── .settings/
+│   └── org.eclipse.core.resources.prefs
+├── bnd.bnd
+├── readme.adoc
+├── src/
+│   └── io/openems/edge/ess/fronius/json/
+│       ├── Config.java
+│       ├── ControlMode.java
+│       ├── FroniusControlClient.java
+│       ├── FroniusEssJson.java
+│       └── FroniusEssJsonImpl.java
+└── test/
+    └── .gitignore
+----
+
+`bnd.bnd` (unverändert - `Power`/`Constraint` liegen bereits im schon
+vorhandenen `io.openems.edge.ess.api`-Paket, `java.net.http`/`java.security`
+sind Teil des JDK und werden von bnd automatisch aufgelöst):
+
+[source]
+----
+Bundle-Name: OpenEMS Edge Ess Fronius (JSON)
+Bundle-Vendor: My Company
+Bundle-License: https://opensource.org/licenses/EPL-2.0
+Bundle-Version: 1.0.0.${tstamp}
+
+-buildpath: \
+	${buildpath},\
+	io.openems.common,\
+	io.openems.common.bridge.http,\
+	io.openems.edge.bridge.http,\
+	io.openems.edge.common,\
+	io.openems.edge.ess.api,\
+
+-testpath: \
+	${testpath}
+----
+
+== Einbau ins Projekt
+
+1. Diesen kompletten Ordner `io.openems.edge.ess.fronius.json/` direkt
+   neben die anderen Edge-Bundles legen.
+2. In `io.openems.edge.application/EdgeApp.bndrun` das Bundle wieder an
+   zwei Stellen alphabetisch eintragen:
++
+[source]
+----
+# im -runrequires Block:
+bnd.identity;id='io.openems.edge.ess.fronius.json',\
+
+# im -runbundles Block:
+io.openems.edge.ess.fronius.json;version=snapshot,\
+----
++
+Danach "Resolve" und "Update" in der `EdgeApp.bndrun`-Ansicht ausführen.
+3. Bundle bauen (in Eclipse importieren wie bei den beiden vorherigen
+   Bundles, oder `./gradlew :io.openems.edge.ess.fronius.json:build`).
+4. In der Edge-Config eine Component-Instanz vom Typ `Ess.Fronius.Json`
+   anlegen: Component-ID z. B. `ess0`, IP `192.168.188.10` (dein GEN24),
+   Device-ID `0`. `controlMode` zunächst auf `READ_ONLY` (Standard)
+   belassen, um erst einmal nur zu beobachten.
+5. Damit hast du für Anlage 1 (GEN24) nun drei zusammengehörige,
+   unabhängige Components: `meter0` (Netz/Smart Meter), `pvInverter1`
+   (PV-Erzeugung) und `ess0` (Batteriespeicher) - z. B. nutzbar in einem
+   eigenen Energiefluss-Widget oder zur reinen Beobachtung/Protokollierung
+   in InfluxDB/Grafana.
+6. **Erst wenn das läuft:** Steuerung optional aktivieren - `controlMode`
+   auf `SCHEDULE_BASED` (empfohlen) oder `GRID_POWER_TARGET` umstellen,
+   `username` (Standard `customer`) und `password` deines
+   GEN24-Webinterface-Zugangs eintragen. Erst danach kann `ess0` als
+   Sollwertgeber in einem Ess-Controller (`Controller.Ess.Balancing`,
+   `Controller.Ess.FixActivePower`, ...) verwendet werden.
+
+== Bekannte Einschränkungen
+
+* Nur Fronius-eigene Hybrid-Geräte (GEN24, Symo Hybrid) unterstützen diesen
+  Endpunkt überhaupt - ein reiner (nicht-hybrider) Symo ohne Speicher
+  liefert hier grundsätzlich keine Daten (`NOT AVAILABLE` laut
+  Fronius-Doku) - für deine Anlage 2 (Symo ohne Speicher) ist dieses Bundle
+  also nicht relevant/nicht nutzbar, was zu deiner Beschreibung passt.
+* Manche Felder (`Temperature_Cell_Minimum/_Maximum`, `Status_BatteryCell`)
+  sind laut Fronius-Doku je nach Batterietyp/Firmware nicht immer
+  vorhanden - die entsprechenden Channels bleiben dann einfach
+  `undefined`, das ist kein Fehler dieser Implementierung.
+* `Modules[]` (Detaildaten je Batteriemodul, z. B. Zellspannungen pro
+  Modul) wird aktuell nicht ausgelesen - bei Bedarf nach demselben Muster
+  ergänzbar.
+* Steuerung ist **inoffiziell/undokumentiert** (siehe oben) - kann sich mit
+  Firmware-Updates ändern; Standardeinstellung ist deshalb `READ_ONLY`.
+* `SCHEDULE_BASED` liefert Ober-/Untergrenzen, keine exakten
+  Momentanwerte; `GRID_POWER_TARGET` interpretiert den Sollwert als
+  Netz- statt Batterieleistung - beides ist eine Näherung an das, was ein
+  Standard-Ess-Controller eigentlich erwartet (siehe Abschnitt "Zwei
+  Steuerungsmodi").
+* Keine Blindleistungssteuerung möglich - `reactivePower` in
+  `applyPower()` wird ignoriert.
+* Reaktionszeit der Steuerung ist durch den 5-Sekunden-Hintergrund-Thread
+  plus Totzone/Mindestabstand begrenzt - kein Echtzeitregelkreis, eher für
+  langsame Optimierungs-Controller (z. B. Preis-/PV-Prognose-basiert)
+  geeignet als für schnelle Netzdienstleistungen.
+
+== Quelle / Vorlage
+
+Struktur und HTTP/JSON-Muster übernommen von
+`io.openems.edge.pvinverter.fronius.json` bzw.
+`io.openems.edge.meter.fronius.smartmeter.json` (dieselbe Session).
+
+`SymmetricEss`/`ManagedSymmetricEss`-Interfaces (Referenz für
+Channel-Namen/Einheiten und die `applyPower`/`getPower`-Verträge):
+https://github.com/OpenEMS/openems/blob/develop/io.openems.edge.ess.api/src/io/openems/edge/ess/api/SymmetricEss.java
+https://github.com/OpenEMS/openems/blob/develop/io.openems.edge.ess.api/src/io/openems/edge/ess/api/ManagedSymmetricEss.java
+
+Fronius Solar API v1 Dokumentation (`GetStorageRealtimeData.cgi`):
+https://api.library.loxone.com/downloader/file/309/Fronius%20Solar%20API%20V1.pdf
+
+Beispiel einer realen GEN24+BYD-Antwort (Community-Diskussion):
+https://github.com/openhab/openhab-addons/issues/12635
+
+batcontrol - Referenzimplementierung der Digest-Auth-Steuerung (Python), auf
+der `FroniusControlClient.java` basiert:
+https://github.com/muexxl/batcontrol/blob/main/src/batcontrol/inverter/fronius.py
+
+evcc-Diskussion zur Instabilität/Änderung dieser inoffiziellen API mit
+Firmware-Updates:
+https://github.com/evcc-io/evcc/discussions/21472
+
+Community-Diskussion zu Modbus/SunSpec-Steuerungsbugs auf dem GEN24 (Grund,
+warum dieses Bundle bewusst nicht auf Modbus setzt):
+https://community.openems.io/t/laden-entladen-am-fronius-symo-gen24-hybridwechselrichter-mit-modbus/1549
+
+`Controller.Ess.GridOptimizedCharge` (netzdienliches, verzögertes Laden mit
+Sell-To-Grid-Limit) und `Controller.Ess.Time-Of-Use-Tariff`
+(Preis-Fahrplan/CHARGE_CONSUMPTION) - Standard-OpenEMS-Controller, mit
+denen dieses Bundle im `SCHEDULE_BASED`-Modus zusammenarbeitet:
+https://github.com/OpenEMS/openems/tree/develop/io.openems.edge.controller.ess.gridoptimizedcharge
+https://github.com/OpenEMS/openems/tree/develop/io.openems.edge.controller.ess.timeofusetariff
+
+EssFeneconCommercial40 - Referenz-Implementierung für das Wiring-Muster von
+`@Reference private Power power`, `getPower()`, `getPowerPrecision()`,
+`applyPower()`:
+https://github.com/OpenEMS/openems/blob/develop/io.openems.edge.ess.fenecon.commercial40/src/io/openems/edge/ess/fenecon/commercial40/EssFeneconCommercial40Impl.java
