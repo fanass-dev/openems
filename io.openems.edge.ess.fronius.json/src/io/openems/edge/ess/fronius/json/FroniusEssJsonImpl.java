@@ -124,11 +124,6 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	private long minWriteIntervalMillis = 15_000L;
 	private boolean allowGridCharging = false;
 	private volatile boolean gridChargeFlagSynced = false;
-	// Set once per transition when applyPower() detects that no Controller wrote
-	// a setpoint in the current cycle - see the Javadoc on applyPower() below for
-	// why this distinction is needed and how it is made. Avoids spamming the log
-	// every single cycle while the situation persists.
-	private final AtomicBoolean unmanagedWarningLogged = new AtomicBoolean(false);
 	private final AtomicBoolean timeOfUseBackedUp = new AtomicBoolean(false);
 	// Jeweils eigener Backoff pro Schreibpfad, damit ein dauerhaft fehlschlagender
 	// Endpunkt (z. B. weil Fronius' eigene Login-Sperre aktiv ist, siehe
@@ -320,6 +315,10 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	 * {@code GetInverterRealtimeData.cgi}). Returns {@code null} if the member is
 	 * missing or JSON-null - Fronius explicitly documents that "inactive
 	 * channels are not included in the response" depending on battery/firmware.
+	 *
+	 * @param object the JSON object to read from
+	 * @param member the member name to read
+	 * @return the parsed value, or {@code null} if missing/JSON-null/unparsable
 	 */
 	private static Float getFloatOrNull(JsonObject object, String member) {
 		if (object == null || !object.has(member) || object.get(member).isJsonNull()) {
@@ -397,54 +396,21 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 			// this guard prevents any write.)
 			return;
 		}
-		// --- "No Controller active" guard -------------------------------------
-		// io.openems.edge.ess.core.power.v1.Solver#solve() calls applyPower() for
-		// EVERY ManagedSymmetricEss on EVERY cycle, unconditionally - even if no
-		// Controller is enabled/scheduled at all for this Ess (verified in
-		// Solver.java line ~401: "ess.applyPower(inv.getActivePower(),
-		// inv.getReactivePower())", called from the generic per-cycle solve loop,
-		// not gated on any Controller being present). Without any Controller, the
-		// Solver's own neutral default is 0 W - which is indistinguishable, by
-		// value alone, from a Controller genuinely requesting ~0 W (e.g. Balancing
-		// when the grid connection is already at 0 W). Writing DISCHARGE_MAX 0 in
-		// that "nobody is actually managing this Ess" case would incorrectly and
-		// permanently block discharging on every single cycle, purely because
-		// SCHEDULE_BASED/GRID_POWER_TARGET was enabled before any Controller was.
-		//
-		// To tell the two apart, we check our OWN SetActivePowerEquals /
-		// -GreaterOrEquals / -LessOrEquals Write-Channels: a Controller calls
-		// setActivePowerEqualsWithFilter()/setActivePowerGreaterOrEquals()/
-		// setActivePowerLessOrEquals() on exactly this Ess instance EVERY cycle it
-		// is active (confirmed e.g. for Controller.Ess.Balancing, which calls
-		// setActivePowerEqualsWithFilter() unconditionally inside its run(), itself
-		// invoked every cycle by the Scheduler) - which populates these Channels
-		// via WriteChannel#setNextWriteValue() BEFORE the Solver runs and calls
-		// applyPower(). The constraint the Solver actually solves against is built
-		// separately and immediately at write-time by
-		// io.openems.edge.ess.api.PowerConstraint's onSetNextWrite() callback,
-		// which reads the value straight from the callback parameter - NOT from
-		// these Channels again later. So nothing else in OpenEMS core ever
-		// consumes/resets these three specific Channels (verified: no repo-wide
-		// match for getNextWriteValueAndReset() on them outside test code), which
-		// makes it safe for us to read-and-reset them here ourselves, once per
-		// cycle, purely as an "was I targeted this cycle" signal.
-		var wasEquals = this.getSetActivePowerEqualsChannel().getNextWriteValueAndReset().isPresent();
-		var wasGreaterOrEquals = this.getSetActivePowerGreaterOrEqualsChannel().getNextWriteValueAndReset().isPresent();
-		var wasLessOrEquals = this.getSetActivePowerLessOrEqualsChannel().getNextWriteValueAndReset().isPresent();
-		if (!wasEquals && !wasGreaterOrEquals && !wasLessOrEquals) {
-			if (this.unmanagedWarningLogged.compareAndSet(false, true)) {
-				this.logWarn(this.log,
-						"Kein Controller hat in diesem Zyklus einen Sollwert fuer diese Ess-Komponente gesetzt "
-								+ "(SetActivePowerEquals/-GreaterOrEquals/-LessOrEquals alle leer) - der vom Solver "
-								+ "uebergebene Wert (" + activePower + " W) ist nur der Framework-Standardwert ohne "
-								+ "aktiven Controller und wird NICHT als Steuerbefehl an Fronius geschrieben. Pruefe, "
-								+ "ob ein Controller (z.B. Controller.Ess.Balancing/GridOptimizedCharge/"
-								+ "Time-Of-Use-Tariff) fuer diese Komponente aktiv und im Scheduler eingetragen ist. "
-								+ "Diese Meldung erscheint nur einmal, bis wieder ein Controller aktiv wird.");
-			}
-			return;
-		}
-		this.unmanagedWarningLogged.set(false);
+		// No "is a Controller actually active" guard here (an earlier version had
+		// one, checking the SetActivePowerEquals/-GreaterOrEquals/-LessOrEquals
+		// Write-Channels) - that check only detected Controllers using those
+		// specific convenience methods (e.g. Controller.Ess.Balancing). Any
+		// Controller calling PowerConstraint.apply()/addPowerConstraint() directly
+		// instead (e.g. Controller.Ess.FixActivePower, Controller.Symmetric
+		// .LimitActivePower, Controller.Ess.Peakshaving, ...) never touches those
+		// Channels, so the guard silently dropped every write for them - see
+		// readme.adoc for how this was found. Without any Controller managing this
+		// Ess at all, the Solver's neutral default (0 W) is written as-is, which
+		// simply means "do not charge/discharge" - a safe default, not a harmful
+		// one, and the pre-existing schedule the user may have had before
+		// activating this Component is separately protected by
+		// backupTimeOfUseConfig()/restoreTimeOfUseConfig(), independent of this
+		// method.
 		if (reactivePower != 0) {
 			this.logDebug(this.log, "Fronius unterstuetzt keine Blindleistungssteuerung ueber diese API - "
 					+ "reactivePower (" + reactivePower + " var) wird ignoriert.");
@@ -610,6 +576,8 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	 * Path of the local backup file for this Component's Time-of-Use schedule
 	 * backup - includes the Component-ID so multiple Fronius-Ess Components
 	 * (e.g. Anlage 1 + Anlage 2) never collide on the same file.
+	 *
+	 * @return the backup file path
 	 */
 	private java.nio.file.Path timeOfUseBackupFile() {
 		return java.nio.file.Path.of("fronius-ess-" + this.id() + "-timeofuse-backup.json");
@@ -645,30 +613,96 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 
 	/**
 	 * SCHEDULE_BASED translation of an OpenEMS ActivePower setpoint (negative =
-	 * charge, positive = discharge) into exactly one Fronius Time-of-Use rule -
-	 * mirroring the proven approach of the open-source batcontrol project. Note
-	 * this is always a ceiling/floor, never a forced exact value: the device
-	 * only charges/discharges this much if PV production/house load actually
-	 * allow/demand it.
+	 * charge, positive = discharge) into Fronius Time-of-Use rules, written via
+	 * {@link FroniusControlClient#writeTimeOfUseForced(java.util.List)} (always
+	 * deactivate-then-reactivate, always a fresh Digest-Auth nonce per request -
+	 * see its Javadoc and readme.adoc for why).
+	 *
+	 * <p>
+	 * Both the charge and discharge side are derived directly from
+	 * {@code activePower} itself - the one value the Solver already resolved
+	 * for this Cycle, already correctly respecting every Controller's
+	 * constraints (provided any limiting Controller runs before any
+	 * EQUALS-setpoint Controller in the Scheduler - see readme.adoc). Nothing
+	 * else is consulted: not {@code Power#getMinPower()}/{@code #getMaxPower()},
+	 * not a {@code ComponentManager} lookup into a specific Controller type, not
+	 * a separate Config field on this Component - see readme.adoc for the
+	 * earlier, rejected attempts and why.
+	 *
+	 * <p>
+	 * Whichever direction is NOT currently desired is capped to 0 via
+	 * {@code CHARGE_MAX}/{@code DISCHARGE_MAX} (a ceiling: the device still only
+	 * charges/discharges as much as PV surplus/house load actually allow -
+	 * writing a ceiling that happens to be unneeded right now is harmless). The
+	 * charge side additionally *forces* a floor via {@code CHARGE_MIN} when
+	 * charging is desired (the device charges AT LEAST this much, from the grid
+	 * if necessary). The discharge side deliberately does NOT have a symmetric
+	 * forced floor ({@code DISCHARGE_MIN}) - see the comment on the
+	 * {@code activePower >= 50} branch below for why: combined with
+	 * {@code Controller.Ess.Balancing} (a closed control loop reacting to the
+	 * actual resulting grid flow), a forced discharge floor that overshoots
+	 * actual house consumption was observed to cause a sustained
+	 * charge/discharge oscillation on a live system - forcing charging does not
+	 * have this problem, since overshooting a charge floor aligns with, rather
+	 * than opposes, Balancing's own goal. This is an accepted, documented
+	 * precision limitation for Controllers that want a genuinely forced
+	 * discharge value (e.g. {@code Controller.Ess.FixActivePower}/{@code Cycle})
+	 * - see readme.adoc.
+	 *
+	 * <p>
+	 * The {@code CHARGE_MIN} floor gets rewritten every time {@code activePower}
+	 * changes by more than {@code writeDeadbandWatt} (checked at most every 5 s
+	 * in {@link #runControlLoop}), so a floor that is no longer wanted is
+	 * corrected within a few seconds, not indefinitely - the same bounded lag
+	 * inherent to the whole SCHEDULE_BASED mechanism (see readme.adoc "Bekannte
+	 * Einschraenkungen"), not something introduced here.
+	 *
+	 * @param activePower the Solver-resolved ActivePower setpoint in [W]
+	 *                        (negative = charge, positive = discharge)
+	 * @return a human-readable description of the action taken, for
+	 *         {@link #_setLastControlAction}
+	 * @throws Exception on any communication, authentication or verification
+	 *                        error
 	 */
 	private String applyScheduleBased(int activePower) throws Exception {
+		var chargeCeilingWatt = Math.max(0, -activePower);
+		var chargeMax = new FroniusControlClient.TimeOfUseRule("CHARGE_MAX", chargeCeilingWatt, true);
 		if (activePower <= -50) {
 			// Charging desired: forces at least this much charge power. Whether this can
 			// actually reach into the grid (or is hard-capped by available PV surplus)
 			// depends on the separately synced HYB_EVU_CHARGEFROMGRID flag - see
-			// syncGridChargeFlag() / Config#allowGridCharging().
+			// syncGridChargeFlag() / Config#allowGridCharging(). CHARGE_MAX is omitted
+			// here (deliberately not "erzwungener Momentanwert" - the device may still
+			// charge more than this floor from PV surplus, same as before).
 			var chargeWatt = Math.abs(activePower);
-			this.controlClient.writeTimeOfUse("CHARGE_MIN", chargeWatt);
+			var chargeMin = new FroniusControlClient.TimeOfUseRule("CHARGE_MIN", chargeWatt, true);
+			this.controlClient.writeTimeOfUseForced(java.util.List.of(chargeMin));
 			return "SCHEDULE_BASED: CHARGE_MIN " + chargeWatt + " W (Netzladen "
 					+ (this.allowGridCharging ? "erlaubt" : "gesperrt, reine PV-Kappung") + ")";
 		} else if (activePower >= 50) {
-			// Discharging desired: cap discharge at this ceiling.
-			this.controlClient.writeTimeOfUse("DISCHARGE_MAX", activePower);
-			return "SCHEDULE_BASED: DISCHARGE_MAX " + activePower + " W (Obergrenze, kein erzwungener Wert)";
+			// Discharging desired: cap discharge at this ceiling - deliberately NOT
+			// DISCHARGE_MIN (forced floor). An earlier version used DISCHARGE_MIN here,
+			// which caused a real oscillation with Controller.Ess.Balancing: Balancing
+			// is a CLOSED control loop that reacts to the actual resulting grid flow -
+			// if a forced discharge floor overshoots actual house consumption (device
+			// discharges more than needed, exporting the surplus), Balancing sees that
+			// export on its NEXT cycle and corrects in the opposite direction (reduces
+			// discharge, possibly even requests charging) - which can itself overshoot,
+			// driving a sustained charge/discharge oscillation. CHARGE_MIN (forced
+			// charge floor) does not have this problem: overshooting it (charging more
+			// than the floor from PV surplus) aligns with, rather than opposes,
+			// Balancing's own goal, so no corrective swing results. CHARGE_MAX 0 blocks
+			// charging in parallel, since we are not currently asking to charge.
+			var dischargeMax = new FroniusControlClient.TimeOfUseRule("DISCHARGE_MAX", activePower, true);
+			this.controlClient.writeTimeOfUseForced(java.util.List.of(dischargeMax, chargeMax));
+			return "SCHEDULE_BASED: DISCHARGE_MAX " + activePower + " W (Obergrenze, kein erzwungener Wert), "
+					+ "CHARGE_MAX " + chargeCeilingWatt + " W";
 		} else {
-			// Near zero: closest available approximation is "block discharging".
-			this.controlClient.writeTimeOfUse("DISCHARGE_MAX", 0);
-			return "SCHEDULE_BASED: DISCHARGE_MAX 0 W (Entladen gesperrt, Annaeherung an 0 W)";
+			// Near zero: no strong signal either way - cap both directions at 0
+			// (ceilings, not forced values: harmless if actually unneeded).
+			var dischargeMax = new FroniusControlClient.TimeOfUseRule("DISCHARGE_MAX", 0, true);
+			this.controlClient.writeTimeOfUseForced(java.util.List.of(dischargeMax, chargeMax));
+			return "SCHEDULE_BASED: DISCHARGE_MAX 0 W, CHARGE_MAX " + chargeCeilingWatt + " W";
 		}
 	}
 
@@ -677,6 +711,13 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	 * as {@code HYB_EM_POWER}, i.e. as a target power AT THE GRID CONNECTION
 	 * POINT for the whole system (PV+Battery+Grid), NOT as battery power. This
 	 * deliberately reinterprets the setpoint's meaning - see readme.adoc.
+	 *
+	 * @param activePower the Solver-resolved ActivePower setpoint in [W],
+	 *                        written through 1:1 as the grid target
+	 * @return a human-readable description of the action taken, for
+	 *         {@link #_setLastControlAction}
+	 * @throws Exception on any communication, authentication or verification
+	 *                        error
 	 */
 	private String applyGridPowerTarget(int activePower) throws Exception {
 		var settings = new JsonObject();
@@ -750,7 +791,11 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 		private long nextAttemptAtMillis = 0L;
 		private long currentDelayMillis = INITIAL_MILLIS;
 
-		/** @return {@code true} if enough time has passed since the last failure to retry now. */
+		/**
+		 * Checks whether enough time has passed since the last failure to retry now.
+		 *
+		 * @return {@code true} if a retry may be attempted now
+		 */
 		boolean isDue() {
 			return System.currentTimeMillis() >= this.nextAttemptAtMillis;
 		}

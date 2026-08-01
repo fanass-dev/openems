@@ -153,21 +153,105 @@ Netzanschlusspunkt** (nicht Batterieleistung!)
 |===
 
 **`SCHEDULE_BASED` (empfohlen)** - `applyPower(activePower, _)` wird wie
-folgt übersetzt (OpenEMS-Konvention: negativ = laden, positiv = entladen):
+folgt übersetzt (OpenEMS-Konvention: negativ = laden, positiv = entladen).
+Sowohl Lade- als auch Entladeseite werden **ausschließlich** aus
+`activePower` selbst abgeleitet - dem einen Wert, den der Solver für diesen
+Cycle bereits aufgelöst hat:
 
 * `activePower <= -50 W` (laden gewollt) -> `ScheduleType=CHARGE_MIN`,
   `Power=|activePower|`: erzwingt eine **Mindest**-Ladeleistung (notfalls aus
-  dem Netz, wenn PV nicht reicht).
+  dem Netz, wenn PV nicht reicht). `CHARGE_MAX` wird hier bewusst
+  weggelassen - der Speicher darf weiterhin mehr laden, falls PV-Überschuss
+  reicht ("kein erzwungener Momentanwert").
 * `activePower >= 50 W` (entladen gewollt) -> `ScheduleType=DISCHARGE_MAX`,
-  `Power=activePower`: setzt eine **Obergrenze** für die Entladeleistung -
-  der Speicher entlädt nur so viel, wie der Hausverbrauch tatsächlich
-  abruft, **nicht** garantiert exakt dieser Wert.
-* Nahe Null -> `ScheduleType=DISCHARGE_MAX`, `Power=0`: nächstmögliche
-  Annäherung an "0 W" (Entladen sperren).
+  `Power=activePower`: setzt eine **Obergrenze** fuer die Entladeleistung -
+  der Speicher entlaedt nur so viel, wie der Hausverbrauch tatsaechlich
+  abruft, **nicht** garantiert exakt dieser Wert. Zusaetzlich `CHARGE_MAX 0`,
+  um Laden waehrenddessen zu blockieren.
+* Nahe Null -> `ScheduleType=DISCHARGE_MAX`, `Power=0` (Obergrenze, kein
+  erzwungener Wert - blockiert Entladen nur, solange kein Bedarf da ist).
+  Zusaetzlich `CHARGE_MAX 0`.
 
-Es wird also **immer nur eine** Regel gleichzeitig geschrieben (kein
-kombiniertes Laden+Entladen-Limit in einem Aufruf) - genau wie es
-batcontrol vormacht.
+WICHTIG (`DISCHARGE_MIN` ausprobiert und wieder verworfen - Instabilitaet mit
+Balancing): Eine Zwischenversion schrieb hier `ScheduleType=DISCHARGE_MIN`
+(erzwungene Mindest-Entladeleistung, analog zu `CHARGE_MIN`) statt
+`DISCHARGE_MAX`, um echtes Erzwingen des Entladens zu ermoeglichen (fuer
+Controller wie `Controller.Ess.FixActivePower`/`Cycle` mit
+`relationship=EQUALS`, die einen echten Zwang statt nur einer Obergrenze
+wollen). `DISCHARGE_MIN` existiert wirklich (siehe unten, wie es entdeckt
+wurde) und funktioniert fuer diese Controller auch korrekt.
+
+**In Kombination mit `Controller.Ess.Balancing` fuehrte das auf einer echten
+Anlage aber zu einem sich aufschaukelnden Lade-/Entlade-Oszillieren** (staendiger
+Wechsel zwischen Netzladen und Netzeinspeisung, beobachtet bei PV=0). Root
+Cause: Balancing ist eine **geschlossene Regelschleife**, die auf den
+tatsaechlich resultierenden Netzfluss reagiert. Ueberschiesst eine erzwungene
+Entlade-Untergrenze (Geraet entlaedt mehr als der Hausverbrauch gerade
+braucht), speist der Ueberschuss ins Netz ein - das sieht Balancing im
+naechsten Zyklus als Einspeisung und korrigiert gegenteilig (weniger
+entladen, im Extremfall sogar Laden anfordern), was selbst wieder
+ueberschiessen kann - eine sich selbst verstaerkende Schwingung zwischen zwei
+rueckkoppelnden Systemen (Balancings Live-Regelung und dem erzwungenen
+Schreiben), ohne daempfendes Element dazwischen. `CHARGE_MIN` (erzwungene
+Lade-Untergrenze) hat dieses Problem NICHT: Ueberschiesst sie (mehr laden als
+die Untergrenze, z. B. aus PV-Ueberschuss), passt das zu Balancings eigenem
+Ziel (mehr PV-Ueberschuss speichern ist gut) statt es ihm entgegenzuwirken -
+keine Gegenreaktion, keine Schwingung.
+
+**Deshalb aktuell wieder `DISCHARGE_MAX`** (reine Obergrenze) fuer "entladen
+gewollt" - auf Kosten der Praezision fuer `FixActivePower`/`Cycle` (kein
+echter Zwang beim Entladen moeglich), aber stabil mit `Balancing`. Diese
+Einschraenkung ist bewusst in Kauf genommen, dieselbe Art Kompromiss wie beim
+Laden (`CHARGE_MAX` wird beim Laden-Zweig ebenfalls bewusst weggelassen,
+siehe oben) - nur diesmal nicht nur aus Praezisionsgruenden, sondern aus
+Stabilitaetsgruenden.
+
+`DISCHARGE_MIN` selbst existiert nachweislich (per Firefox-Netzwerkanalyse
+entdeckt: Feld "Min. Entladeleistung" im GEN24-Webinterface, `FroniusControlClient
+.writeTimeOfUse()` akzeptiert beliebige `ScheduleType`-Strings und wuerde es
+weiterhin unterstuetzen) - falls in Zukunft ein Anwendungsfall NUR mit
+erzwingenden Controllern (`FixActivePower`/`Cycle`), OHNE gleichzeitig aktives
+`Balancing`, benoetigt wird, waere `DISCHARGE_MIN` dafuer isoliert
+unproblematisch. Eine allgemeine Verwendung (wie zuletzt versucht) ist aber
+nicht sicher, solange nicht zwischen "weichem Ziel" (Balancing) und "hartem
+Zwang" (`relationship=EQUALS`) unterschieden werden kann - der Solver liefert
+am Ende nur eine einzige Zahl, ohne Herkunftsinformation, siehe auch die
+fruehere Diskussion zu `activePower`-Rueckverfolgung weiter oben.
+
+Alle Regeln eines Aufrufs werden in **einem** POST geschrieben (siehe
+`FroniusControlClient.writeTimeOfUse(List<TimeOfUseRule>)`), da
+`POST /api/config/timeofuse` die komplette Zeitsteuerung ersetzt statt
+einzelne Eintraege zu mergen - mehrere getrennte Aufrufe wuerden sich sonst
+gegenseitig ueberschreiben. Bestaetigt per Firefox-Netzwerkanalyse: das
+GEN24-Webinterface selbst sendet bei zwei gleichzeitig konfigurierten Regeln
+(z. B. `DISCHARGE_MAX` + `DISCHARGE_MIN`) exakt ein zweielementiges Array in
+einem POST.
+
+WICHTIG (Zuverlaessigkeit von Wertaenderungen - `writeTimeOfUseForced()`):
+Beim Testen wurde beobachtet, dass eine reine Wertaenderung einer bereits
+aktiven Regel (z. B. `DISCHARGE_MIN` von 500 auf 700 W) von Fronius mit
+HTTP 200 und bestaetigtem `writeSuccess` beantwortet wurde, der neue Wert am
+Geraet aber nicht ankam (auch nach hartem Reload des Webinterface). Die
+Root Cause ist nicht abschliessend geklaert (nicht bei Fronius dokumentiert),
+zwei Verdaechtige wurden trotzdem behoben:
+
+* `sendAuthenticated()` fordert jetzt **vor jeder** authentifizierten Anfrage
+  zwingend einen frischen Nonce an, statt den von der letzten Antwort
+  "rollierend" mitgelieferten Nonce weiterzuverwenden - falls dieser
+  Mechanismus bei bestimmten Firmware-Staenden aus dem Tritt geraet und zu
+  einem Replay einer alten (zwischengespeicherten) Antwort fuehrt, waere das
+  eine plausible Erklaerung fuer "Erfolg gemeldet, aber nicht angewendet".
+* `writeTimeOfUseForced()` schreibt jede tatsaechliche Regeländerung jetzt
+  immer als **Deaktivieren-dann-Reaktivieren** (zwei POSTs: erst dieselben
+  Regeln mit `Active=false`, danach wie gewuenscht) statt eines einzelnen
+  In-Place-Werteupdates - falls Fronius intern eine bereits aktive Regel bei
+  reiner Wertaenderung ignoriert, sollte das erzwingen, dass sie neu
+  uebernommen wird.
+
+Beide Massnahmen sind unbestaetigte Workarounds fuer eine nicht dokumentierte
+API - falls das Problem weiterhin auftritt, waere ein systematischerer Test
+(Wert mehrfach hintereinander aendern, beobachten ob das Muster reproduzierbar
+ist) der naechste Schritt.
 
 WICHTIG: `POST /api/config/timeofuse` **ersetzt die komplette Zeitsteuerung**
 des Geräts, nicht nur einen einzelnen Eintrag. Falls du vor der Aktivierung
@@ -332,47 +416,51 @@ nicht nötig. Nach einer Änderung der drei Felder ist ein Neustart der
 Component bzw. von Edge erforderlich (kein `@Modified`-Hot-Reload
 implementiert).
 
-=== Schutz gegen "kein Controller aktiv" (SCHEDULE_BASED / GRID_POWER_TARGET)
+=== Kein "ist ein Controller aktiv?"-Guard (bewusst entfernt)
 
-**Symptom:** Sobald `controlMode` auf `SCHEDULE_BASED` oder `GRID_POWER_TARGET`
-steht, aber (noch) kein Controller fuer dieses Ess aktiv bzw. im Scheduler
-eingetragen ist, wurde `DISCHARGE_MAX 0` dauerhaft an Fronius geschrieben und
-die Entladung damit permanent blockiert - obwohl das eigentlich niemand so
-wollte.
+Eine Zwischenversion hatte hier einen Schutzmechanismus: `applyPower()`
+pruefte vor jeder Verarbeitung die drei eigenen Write-Kanaele
+`SetActivePowerEquals`, `SetActivePowerGreaterOrEquals` und
+`SetActivePowerLessOrEquals` mittels `getNextWriteValueAndReset()` - waren
+alle drei in einem Zyklus leer, wurde der Schreibvorgang uebersprungen
+("kein Controller aktiv, der vom Solver gelieferte Default-Wert 0 W soll
+nicht als echter Steuerbefehl missverstanden werden").
 
-**Root Cause** (verifiziert im OpenEMS-Quellcode, nicht geraten): Der
-Power-Solver ruft `applyPower(activePower, reactivePower)` fuer JEDEN
-`ManagedSymmetricEss` in JEDEM Zyklus auf - unabhaengig davon, ob ueberhaupt
-ein Controller aktiv ist. Ist keiner aktiv, liefert der Solver seinen
-neutralen Default von 0 W. Dieser Wert ist anhand seines Betrags allein nicht
-von einer echten Controller-Anfrage nach ~0 W (z. B. Balancing bei bereits
-ausgeglichenem Netzbezug) zu unterscheiden - unsere `applyScheduleBased()`
-behandelte beide Faelle bisher identisch im Zweig "nahe Null" und schrieb
-unbedingt `DISCHARGE_MAX 0`.
+**Warum das verworfen wurde:** Dieser Guard erkannte nur Controller, die wie
+`Controller.Ess.Balancing` ueber `ess.setActivePowerEqualsWithFilter()` (bzw.
+die analogen `-GreaterOrEquals`/`-LessOrEquals`-Methoden) gehen - diese
+Komfortmethoden schreiben die drei genannten Channels. Etliche andere,
+ebenso valide Controller (`Controller.Ess.FixActivePower`,
+`Controller.Symmetric.LimitActivePower`, `Controller.Ess.Peakshaving`, u. a.)
+rufen stattdessen `PowerConstraint.apply()`/`ess.addPowerConstraint()` DIREKT
+auf - das geht am Solver vorbei zwar korrekt in die Constraint-Berechnung
+ein (verifiziert per `ess0/DebugSetActivePower`), beruehrt aber keinen der
+drei Write-Channels. Der Guard hielt das faelschlich fuer "kein Controller
+aktiv" und verwarf den Schreibvorgang komplett - `ess0/LastControlAction`
+blieb leer, obwohl der Solver den Sollwert korrekt aufgeloest hatte. Mit nur
+`Controller.Ess.FixActivePower` (ohne zusaetzliches `Balancing`) liess sich
+das gezielt reproduzieren.
 
-**Fix:** `applyPower()` prueft jetzt vor jeder Verarbeitung die drei
-eigenen Write-Kanaele `SetActivePowerEquals`, `SetActivePowerGreaterOrEquals`
-und `SetActivePowerLessOrEquals` mittels `getNextWriteValueAndReset()`. Ein
-aktiver Controller (z. B. `Controller.Ess.Balancing`, das in jedem Zyklus
-unbedingt `setActivePowerEqualsWithFilter()` aufruft) setzt in jedem Zyklus
-mindestens einen dieser Kanaele, BEVOR der Solver `applyPower()` aufruft -
-denn die eigentliche Solver-Constraint wird von `PowerConstraint` bereits beim
-Setzen des Kanals (`onSetNextWrite()`-Callback) aus dem uebergebenen Wert
-gebaut, nicht spaeter erneut aus dem Kanal ausgelesen. Ein wiederholtes
-Auslesen/Zuruecksetzen dieser drei Kanaele durch unser eigenes Bundle ist
-daher unschaedlich fuer den Solver (verifiziert: `getNextWriteValueAndReset()`
-wird sonst im gesamten Repository fuer diese Kanaele nirgends ausserhalb von
-Test-Code aufgerufen).
-
-Sind alle drei Kanaele in einem Zyklus leer, hat kein Controller in diesem
-Zyklus tatsaechlich einen Sollwert fuer dieses Ess gesetzt - der vom Solver
-uebergebene Wert ist dann nur der Framework-Default. In diesem Fall
-ueberspringt `applyPower()` die gesamte Schreiblogik fuer diesen Zyklus
-vollstaendig (verhaelt sich wie `READ_ONLY`), anstatt `DISCHARGE_MAX 0` zu
-schreiben. Sobald wieder mindestens ein Controller aktiv ist, greift die
-bisherige Logik unveraendert. Eine einmalige Warnung wird im Log ausgegeben,
-solange dieser Zustand anhaelt (`unmanagedWarningLogged`-Flag, verhindert
-Log-Spam pro Zyklus).
+**Kein Ersatz-Mechanismus noetig:** Es gibt keine zuverlaessige, generische
+Moeglichkeit herauszufinden "hat irgendein Controller diesen Cycle wirklich
+etwas fuer dieses Ess vorgegeben" - der Solver liefert am Ende nur eine
+einzige Zahl, ohne Herkunftsinformation. Das eigentliche Risiko, vor dem der
+Guard schuetzen sollte (`DISCHARGE_MAX 0` dauerhaft, weil noch kein
+Controller lief), ist zudem kein echter Schaden: Ohne jeden verwaltenden
+Controller ist "vorsichtshalber nicht laden/entladen" ein vernuenftiger,
+sicherer Default. Das tatsaechlich kritische Szenario - eine *bereits
+bestehende* Zeitsteuerung des Nutzers beim allerersten Schreibvorgang nicht
+versehentlich zu ueberschreiben - ist ohnehin durch einen unabhaengigen
+Mechanismus abgedeckt: `backupTimeOfUseConfig()` sichert die
+Ausgangs-Zeitsteuerung, bevor ueberhaupt zum ersten Mal geschrieben wird.
+`applyPower()` verarbeitet den vom Solver gelieferten Wert daher jetzt
+immer, ganz ohne Sonderfall - so wie es z. B. auch
+`EssFeneconCommercial40`/`AbstractGenericManagedEss` (die eingebauten
+Referenz-Ess-Implementierungen) tun, die applyPower() ebenfalls ungeprueft
+ausfuehren (bei denen ist ein "0 W ohne Controller"-Wert allerdings
+folgenlos, da dort ein Echtzeit-Register jede Sekunde neu geschrieben wird -
+anders als unsere persistente Zeitsteuerungs-Regel, die nur alle ~15 s
+geschrieben wird, siehe naechster Abschnitt zur Traegheit).
 
 === Saisonale Nutzung mit Standard-OpenEMS-Controllern
 
@@ -633,9 +721,14 @@ Danach "Resolve" und "Update" in der `EdgeApp.bndrun`-Ansicht ausführen.
   ergänzbar.
 * Steuerung ist **inoffiziell/undokumentiert** (siehe oben) - kann sich mit
   Firmware-Updates ändern; Standardeinstellung ist deshalb `READ_ONLY`.
-* `SCHEDULE_BASED` liefert Ober-/Untergrenzen, keine exakten
-  Momentanwerte; `GRID_POWER_TARGET` interpretiert den Sollwert als
-  Netz- statt Batterieleistung - beides ist eine Näherung an das, was ein
+* `SCHEDULE_BASED` liefert Obergrenzen (`CHARGE_MAX`/`DISCHARGE_MAX`) bzw.
+  einen erzwungenen Mindestwert nur beim Laden (`CHARGE_MIN`), aber nie einen
+  exakten Momentanwert im Sinne von "genau X W, nicht mehr und nicht
+  weniger" - insbesondere Entladen kann NICHT erzwungen werden
+  (`DISCHARGE_MIN` existiert zwar, ist aber wegen Instabilitaet mit
+  `Controller.Ess.Balancing` bewusst nicht im Einsatz, siehe oben);
+  `GRID_POWER_TARGET` interpretiert den Sollwert als Netz- statt
+  Batterieleistung - beides ist eine Näherung an das, was ein
   Standard-Ess-Controller eigentlich erwartet (siehe Abschnitt "Zwei
   Steuerungsmodi").
 * Keine Blindleistungssteuerung möglich - `reactivePower` in
