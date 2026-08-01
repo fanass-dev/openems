@@ -372,6 +372,38 @@ selben Aufruf wie `HYB_EM_MODE`/`HYB_EM_POWER` setzt (`set_wr_parameters()`),
 nicht nur getrennt fuer die Zeitsteuerung - spricht dafuer, dass es auch im
 manuellen Modus wirkt, auch wenn das nicht separat live verifiziert wurde.
 
+=== Maximaler Lade-SoC (`SET_MAX_SOC`-Channel)
+
+Unabhaengig vom `controlMode` und vom Ess-Sollwert selbst laesst sich zur
+Laufzeit ein maximaler Lade-SoC setzen - Aequivalent zur Einstellung "max.
+SoC" in der Fronius-Weboberflaeche (Batterie / Einstellungen). Dazu den
+Custom-Write-Channel `SET_MAX_SOC` (Prozent, 0-100) beschreiben, z. B. per
+JSON-RPC `setChannelValue` oder aus einem eigenen Controller heraus.
+
+Technisch wird dafuer `BAT_M0_SOC_MAX` zusammen mit `BAT_M0_SOC_MODE=manual`
+ueber denselben `/api/config/batteries`-Endpunkt geschrieben, der auch fuer
+`HYB_EM_POWER`/`HYB_EVU_CHARGEFROMGRID` verwendet wird (siehe
+`FroniusControlClient#writeBatteryConfig`). Die Referenzimplementierung
+(`batcontrol`, `set_wr_parameters()`) schreibt `BAT_M0_SOC_MIN` IMMER
+zusammen mit `BAT_M0_SOC_MAX` in derselben Anfrage - ein Schreibversuch mit
+nur `BAT_M0_SOC_MAX` fuehrte in der Praxis dazu, dass das Geraet den Wert
+nicht uebernahm. Deshalb liest `applyMaxSoc()` vor jedem Schreiben zuerst per
+GET (`FroniusControlClient#getBatteryConfig`) den aktuell auf dem Geraet
+konfigurierten `BAT_M0_SOC_MIN`-Wert und sendet ihn unveraendert mit, damit
+ein ggf. bereits gesetzter Mindest-SoC dabei nicht verloren geht.
+
+Der geschriebene Wert wird bis zum erfolgreichen Schreiben zwischengespeichert
+(`pendingMaxSoc`) und bei Fehlschlag mit eigenem, von `applyPowerBackoff`
+unabhaengigem `RetryBackoff` erneut versucht - ein Fehlschlag blockiert also
+nicht das Schreiben des Leistungssollwerts und umgekehrt. Anders als der
+Leistungssollwert unterliegt der Max-SoC keiner Totzone/Mindestabstand
+(`writeDeadbandWatt`/`minWriteIntervalSeconds`): eine Aenderung ist eine
+bewusste, seltene Nutzeraktion, kein kontinuierlich geregelter Wert, daher
+wird jede Aenderung sofort (vorbehaltlich des eigenen Backoffs bei Fehlern)
+angewendet. Funktioniert auch bei `controlMode = READ_ONLY` nicht - dafuer ist
+weiterhin ein `controlClient` (also Benutzername/Passwort) noetig, da es sich
+um einen Schreibzugriff handelt.
+
 === Sicherheitsmechanismen im Bundle
 
 * **Entkoppelter Schreib-Thread**: `applyPower()` selbst speichert den

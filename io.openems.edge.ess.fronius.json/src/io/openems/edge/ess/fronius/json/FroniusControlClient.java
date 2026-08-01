@@ -162,6 +162,23 @@ public class FroniusControlClient {
 	}
 
 	/**
+	 * Reads the current battery configuration from {@code /api/config/batteries}
+	 * (GET, authenticated) - mirrors the reference implementation's
+	 * {@code get_battery_config()}. Fields (e.g. {@code BAT_M0_SOC_MIN}) are at
+	 * the top level of the returned object. Used before writing
+	 * {@code BAT_M0_SOC_MAX} alone, since the reference implementation always
+	 * sends {@code BAT_M0_SOC_MIN} and {@code BAT_M0_SOC_MAX} together - the
+	 * device may reject or ignore a write that only sets one of the two.
+	 *
+	 * @return the raw JSON object as currently stored on the device
+	 * @throws Exception on any communication, authentication or parsing error
+	 */
+	public JsonObject getBatteryConfig() throws Exception {
+		this.ensureApiDetected();
+		return this.sendAuthenticated("GET", this.paths.configBatteriesPath, "");
+	}
+
+	/**
 	 * One Time-of-Use schedule entry, always applying 00:00-23:59 on all
 	 * weekdays.
 	 *
