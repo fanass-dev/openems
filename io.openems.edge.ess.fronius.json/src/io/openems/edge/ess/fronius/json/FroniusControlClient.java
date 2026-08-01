@@ -133,10 +133,10 @@ public class FroniusControlClient {
 	public synchronized String detectApiVersion() throws Exception {
 		JsonObject result;
 		try {
-			result = sendUnauthenticated("GET", "/api/status/version");
+			result = this.sendUnauthenticated("GET", "/api/status/version");
 			this.paths = null; // determined below based on version
 		} catch (Exception e) {
-			result = sendUnauthenticated("GET", "/status/version");
+			result = this.sendUnauthenticated("GET", "/status/version");
 			this.paths = PATHS_LEGACY;
 			this.firmwareVersion = getAsString(result, "swrevisions", "GEN24");
 			return this.firmwareVersion;
@@ -162,12 +162,24 @@ public class FroniusControlClient {
 	}
 
 	/**
+	 * One Time-of-Use schedule entry, always applying 00:00-23:59 on all
+	 * weekdays.
+	 *
+	 * @param scheduleType {@code CHARGE_MIN}, {@code CHARGE_MAX},
+	 *                         {@code DISCHARGE_MAX} or {@code DISCHARGE_MIN}
+	 * @param powerWatt        the power limit/target in [W], {@code >= 0}
+	 * @param active           whether the rule should be active
+	 */
+	public record TimeOfUseRule(String scheduleType, int powerWatt, boolean active) {
+	}
+
+	/**
 	 * Writes a single-item Time-of-Use schedule (replacing any previously active
 	 * schedule) that applies 00:00-23:59 on all weekdays, with {@code Active}
 	 * set to {@code true}.
 	 *
-	 * @param scheduleType {@code CHARGE_MIN}, {@code CHARGE_MAX} or
-	 *                         {@code DISCHARGE_MAX}
+	 * @param scheduleType {@code CHARGE_MIN}, {@code CHARGE_MAX},
+	 *                         {@code DISCHARGE_MAX} or {@code DISCHARGE_MIN}
 	 * @param powerWatt        the power limit/target in [W], {@code >= 0}
 	 * @throws Exception on any communication, authentication or verification
 	 *                        error
@@ -182,14 +194,36 @@ public class FroniusControlClient {
 	 * previously written rule (e.g. when giving control back to the device's own
 	 * automatic logic on shutdown).
 	 *
-	 * @param scheduleType {@code CHARGE_MIN}, {@code CHARGE_MAX} or
-	 *                         {@code DISCHARGE_MAX}
+	 * @param scheduleType {@code CHARGE_MIN}, {@code CHARGE_MAX},
+	 *                         {@code DISCHARGE_MAX} or {@code DISCHARGE_MIN}
 	 * @param powerWatt        the power limit/target in [W], {@code >= 0}
 	 * @param active           whether the rule should be active
 	 * @throws Exception on any communication, authentication or verification
 	 *                        error
 	 */
 	public void writeTimeOfUse(String scheduleType, int powerWatt, boolean active) throws Exception {
+		this.writeTimeOfUse(java.util.List.of(new TimeOfUseRule(scheduleType, powerWatt, active)));
+	}
+
+	/**
+	 * Writes a Time-of-Use schedule consisting of one or more rules in a single
+	 * POST call (replacing any previously active schedule), each applying
+	 * 00:00-23:59 on all weekdays. Unlike two separate
+	 * {@link #writeTimeOfUse(String, int, boolean)} calls - which would each
+	 * replace the *entire* device schedule with just their own one item, since
+	 * {@code POST /api/config/timeofuse} always replaces the complete
+	 * Zeitsteuerung rather than merging - this allows e.g. a {@code CHARGE_MAX}
+	 * ceiling and a {@code DISCHARGE_MIN} floor to be active on the device at
+	 * the same time. Confirmed against a live device (Firefox Netzwerkanalyse of
+	 * the GEN24's own Webinterface): it sends multiple differently-typed rules
+	 * in exactly this array shape when e.g. both a discharge ceiling and a
+	 * discharge floor are configured via the UI.
+	 *
+	 * @param rules the rules to write, in order; must not be empty
+	 * @throws Exception on any communication, authentication or verification
+	 *                        error
+	 */
+	public void writeTimeOfUse(java.util.List<TimeOfUseRule> rules) throws Exception {
 		this.ensureApiDetected();
 
 		var weekdays = new JsonObject();
@@ -200,20 +234,54 @@ public class FroniusControlClient {
 		timeTable.addProperty("Start", "00:00");
 		timeTable.addProperty("End", "23:59");
 
-		var item = new JsonObject();
-		item.addProperty("Active", active);
-		item.addProperty("Power", Math.max(0, powerWatt));
-		item.addProperty("ScheduleType", scheduleType);
-		item.add("TimeTable", timeTable);
-		item.add("Weekdays", weekdays);
-
 		var list = new JsonArray();
-		list.add(item);
+		for (var rule : rules) {
+			var item = new JsonObject();
+			item.addProperty("Active", rule.active());
+			item.addProperty("Power", Math.max(0, rule.powerWatt()));
+			item.addProperty("ScheduleType", rule.scheduleType());
+			item.add("TimeTable", timeTable);
+			item.add("Weekdays", weekdays);
+			list.add(item);
+		}
 		var config = new JsonObject();
 		config.add("timeofuse", list);
 
 		var response = this.sendAuthenticated("POST", this.paths.configTimeOfUsePath, config.toString());
 		this.verifyWriteSuccess(response, java.util.List.of("timeofuse"));
+	}
+
+	/**
+	 * Same as {@link #writeTimeOfUse(java.util.List)}, but first writes the same
+	 * rules with {@code Active=false} before writing them as given (typically
+	 * {@code Active=true}). Workaround for an observed Fronius firmware quirk:
+	 * changing just the {@code Power} value of an already-active rule via a
+	 * normal POST was observed to be silently ignored by the device (HTTP 200,
+	 * {@code writeSuccess} confirmed the write, but the persisted value did not
+	 * change) - deactivating and reactivating the rule appears to force the
+	 * device to properly re-apply it. Combined with the always-fresh-nonce
+	 * behaviour in {@link #sendAuthenticated}, since both were suspected
+	 * contributors - see readme.adoc. Not used for
+	 * {@link #setTimeOfUse(JsonArray)} (backup restore on deactivate), which is
+	 * a one-shot write, not a "change a running rule" scenario.
+	 *
+	 * @param rules the rules to write (as {@code Active=true} or whatever
+	 *                  {@link TimeOfUseRule#active()} specifies); must not be
+	 *                  empty
+	 * @throws Exception on any communication, authentication or verification
+	 *                        error - thrown if EITHER the deactivate or the
+	 *                        reactivate POST fails; callers should treat this
+	 *                        the same as a plain failed write (the device may be
+	 *                        left with the rule deactivated in that case, same
+	 *                        as any other failed write leaving the previous
+	 *                        state in place)
+	 */
+	public void writeTimeOfUseForced(java.util.List<TimeOfUseRule> rules) throws Exception {
+		var inactiveRules = rules.stream() //
+				.map(rule -> new TimeOfUseRule(rule.scheduleType(), rule.powerWatt(), false)) //
+				.toList();
+		this.writeTimeOfUse(inactiveRules);
+		this.writeTimeOfUse(rules);
 	}
 
 	/**
@@ -308,11 +376,26 @@ public class FroniusControlClient {
 	 * Sends an authenticated request, performing the Digest-Auth handshake
 	 * (priming request to obtain a nonce) if none is cached yet, and retrying
 	 * once more on 401/403 with a fresh nonce.
+	 *
+	 * @param method   the HTTP method, e.g. {@code "POST"}
+	 * @param path     the request path
+	 * @param jsonBody the JSON request body, or an empty string for a body-less
+	 *                     request
+	 * @return the parsed JSON response body
+	 * @throws Exception on any communication, authentication or verification
+	 *                        error
 	 */
 	private JsonObject sendAuthenticated(String method, String path, String jsonBody) throws Exception {
-		if (this.nonce == null) {
-			this.primeNonce(method, path);
-		}
+		// Always fetch a fresh nonce, rather than reusing the "rolling nonce"
+		// echoed back by the previous response (this.nonce != null check removed
+		// on purpose) - a change to the Power value of an already-active
+		// Time-of-Use rule was observed to be silently ignored by the device
+		// (HTTP 200, writeSuccess confirmed, persisted value unchanged), suspected
+		// to be a stale/reused-nonce replay on the device side (undocumented API,
+		// not confirmed against Fronius sources - see readme.adoc). The extra
+		// round-trip this costs is negligible given how infrequently writes
+		// actually happen (rate-limited to at most every minWriteIntervalSeconds).
+		this.primeNonce(method, path);
 		var candidates = this.passwordHashCandidates();
 		var maxAttempts = this.cachedPasswordHashAlgorithm != null ? 2 : Math.max(2, candidates.length);
 		for (var attempt = 0; attempt < maxAttempts; attempt++) {
@@ -345,6 +428,8 @@ public class FroniusControlClient {
 	/**
 	 * Candidate HA1 password-hash algorithms to try, in order, mirroring the
 	 * reference implementation's {@code usable_password_hash_methods}.
+	 *
+	 * @return the candidate algorithm names, in the order they should be tried
 	 */
 	private String[] passwordHashCandidates() {
 		var wireAlg = this.wireAlgorithm != null ? this.wireAlgorithm : this.paths.algorithm;
@@ -354,7 +439,13 @@ public class FroniusControlClient {
 		return new String[] { "SHA-256", "MD5", "MD5" };
 	}
 
-	/** Sends one request without Authorization header, purely to obtain a nonce. */
+	/**
+	 * Sends one request without Authorization header, purely to obtain a nonce.
+	 *
+	 * @param method the HTTP method, e.g. {@code "POST"}
+	 * @param path   the request path
+	 * @throws Exception on any communication error, or if no nonce was returned
+	 */
 	private void primeNonce(String method, String path) throws Exception {
 		var response = this.sendOnce(method, path, "", false, null);
 		this.updateAuthStateFromResponse(response);
@@ -383,12 +474,19 @@ public class FroniusControlClient {
 	}
 
 	/**
+	 * Builds the {@code Authorization: Digest ...} header value for one request.
+	 *
+	 * @param method                        the HTTP method, e.g. {@code "POST"}
+	 * @param path                          the request path
 	 * @param passwordHashAlgorithmOverride Java {@link MessageDigest} name to use
 	 *                                          for HA1 ({@code user:realm:password})
 	 *                                          specifically - may differ from the
 	 *                                          wire {@code algorithm=} token used for
 	 *                                          HA2/response (see
 	 *                                          {@link #cachedPasswordHashAlgorithm}).
+	 * @return the header value
+	 * @throws NoSuchAlgorithmException if the resolved hash algorithm is not
+	 *                                       available on this JVM
 	 */
 	private String buildDigestHeader(String method, String path, String passwordHashAlgorithmOverride)
 			throws NoSuchAlgorithmException {
@@ -411,7 +509,13 @@ public class FroniusControlClient {
 				+ "\", response=\"" + response + "\"";
 	}
 
-	/** Maps a wire-format Digest algorithm token to the name Java's {@link MessageDigest} expects. */
+	/**
+	 * Maps a wire-format Digest algorithm token to the name Java's
+	 * {@link MessageDigest} expects.
+	 *
+	 * @param wireAlg the algorithm token as sent by Fronius, e.g. {@code "SHA256"}
+	 * @return the equivalent Java {@link MessageDigest} algorithm name
+	 */
 	private static String toJavaAlgorithmName(String wireAlg) {
 		return switch (wireAlg.toUpperCase(java.util.Locale.ROOT)) {
 		case "SHA256", "SHA-256" -> "SHA-256";
@@ -424,6 +528,8 @@ public class FroniusControlClient {
 	 * Parses {@code WWW-Authenticate} (on 401) or the non-standard
 	 * {@code X-WWW-Authenticate}/{@code X-Www-Authenticate} (on subsequent 200
 	 * responses, rolling nonce) and updates the cached nonce/cnonce.
+	 *
+	 * @param response the HTTP response to read auth headers from
 	 */
 	private void updateAuthStateFromResponse(HttpResponse<String> response) {
 		var headers = response.headers();
@@ -498,7 +604,15 @@ public class FroniusControlClient {
 		return sb.toString();
 	}
 
-	/** Very small, dependency-free version comparator for "1.38.6-1" style strings. */
+	/**
+	 * Very small, dependency-free version comparator for "1.38.6-1" style
+	 * strings.
+	 *
+	 * @param version    the version to check
+	 * @param minVersion the minimum required version
+	 * @return {@code true} if {@code version} is greater than or equal to
+	 *         {@code minVersion}
+	 */
 	private static boolean isVersionAtLeast(String version, String minVersion) {
 		try {
 			var a = version.replace("-", ".").split("\\.");
