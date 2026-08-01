@@ -149,6 +149,14 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	private final RetryBackoff timeOfUseBackupBackoff = new RetryBackoff();
 	private final RetryBackoff gridChargeFlagBackoff = new RetryBackoff();
 	private final RetryBackoff applyPowerBackoff = new RetryBackoff();
+	// Set (overwriting any not-yet-applied previous value) whenever
+	// SetMaxSocChannel is written; cleared only once successfully sent to
+	// Fronius. Independent of desiredActivePower/writeDeadbandWatt -
+	// max-SoC changes are a deliberate, infrequent user action, not a
+	// continuously regulated value, so every change is applied (subject only to
+	// its own retry backoff on failure), not deadbanded.
+	private volatile Integer pendingMaxSoc = null;
+	private final RetryBackoff maxSocBackoff = new RetryBackoff();
 
 	public FroniusEssJsonImpl() {
 		super(//
@@ -465,6 +473,13 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 				&& this.gridChargeFlagBackoff.isDue()) {
 			this.syncGridChargeFlag();
 		}
+		var maxSocWrite = this.getSetMaxSocChannel().getNextWriteValueAndReset();
+		if (maxSocWrite.isPresent()) {
+			this.pendingMaxSoc = maxSocWrite.get();
+		}
+		if (this.pendingMaxSoc != null && this.maxSocBackoff.isDue()) {
+			this.applyMaxSoc();
+		}
 		if (!this.hasDesiredActivePower.get()) {
 			return;
 		}
@@ -624,6 +639,43 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 			this.gridChargeFlagBackoff.recordFailure();
 			this.logWarn(this.log,
 					"Konnte HYB_EVU_CHARGEFROMGRID nicht setzen, versuche es mit steigendem Backoff erneut: "
+							+ e.getMessage());
+		}
+	}
+
+	/**
+	 * Writes {@link #pendingMaxSoc} (set via the {@link FroniusEssJson.ChannelId#SET_MAX_SOC}
+	 * write channel) as {@code BAT_M0_SOC_MAX} with {@code BAT_M0_SOC_MODE=manual}, so
+	 * the device enforces it as a hard charge ceiling independent of any
+	 * ActivePower setpoint - mirrors setting "max. SoC" in the Fronius
+	 * Webinterface (Batterie / Einstellungen). The reference implementation
+	 * ({@code batcontrol}) always sends {@code BAT_M0_SOC_MIN} together with
+	 * {@code BAT_M0_SOC_MAX} in the same request - the device may reject/ignore
+	 * a write that only sets one of the two - so the current
+	 * {@code BAT_M0_SOC_MIN} is read from the device first and echoed back
+	 * unchanged. Retries on the next control loop tick if the write fails;
+	 * {@link #pendingMaxSoc} is only cleared on success, so a later write (e.g.
+	 * after an Edge restart) always reflects the most recently requested value.
+	 */
+	private void applyMaxSoc() {
+		try {
+			var current = this.controlClient.getBatteryConfig();
+			var settings = new JsonObject();
+			settings.addProperty("BAT_M0_SOC_MODE", "manual");
+			settings.addProperty("BAT_M0_SOC_MAX", this.pendingMaxSoc);
+			if (current.has("BAT_M0_SOC_MIN")) {
+				settings.add("BAT_M0_SOC_MIN", current.get("BAT_M0_SOC_MIN"));
+			}
+			this.controlClient.writeBatteryConfig(settings);
+			this._setLastControlAction("BAT_M0_SOC_MAX auf " + this.pendingMaxSoc + " % gesetzt");
+			this.logInfo(this.log, "Maximaler Lade-SoC auf " + this.pendingMaxSoc + " % gesetzt.");
+			this.pendingMaxSoc = null;
+			this.maxSocBackoff.recordSuccess();
+		} catch (Exception e) {
+			this._setLastControlAction("FEHLER (max. SoC): " + e.getMessage());
+			this.maxSocBackoff.recordFailure();
+			this.logWarn(this.log,
+					"Konnte maximalen Lade-SoC nicht setzen, versuche es mit steigendem Backoff erneut: "
 							+ e.getMessage());
 		}
 	}

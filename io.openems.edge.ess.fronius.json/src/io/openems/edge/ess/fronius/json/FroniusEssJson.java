@@ -1,11 +1,13 @@
 package io.openems.edge.ess.fronius.json;
 
+import io.openems.common.channel.AccessMode;
 import io.openems.common.channel.Level;
 import io.openems.common.channel.Unit;
 import io.openems.common.types.OpenemsType;
 import io.openems.edge.common.channel.BooleanReadChannel;
 import io.openems.edge.common.channel.Doc;
 import io.openems.edge.common.channel.IntegerReadChannel;
+import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.channel.StateChannel;
 import io.openems.edge.common.channel.StringReadChannel;
 import io.openems.edge.common.channel.value.Value;
@@ -99,7 +101,24 @@ public interface FroniusEssJson extends ManagedSymmetricEss, OpenemsComponent {
 		 * sent to the device (e.g. "SCHEDULE_BASED: CHARGE_MIN 1500 W"), for
 		 * diagnostics/Grafana. Empty as long as ControlMode == READ_ONLY.
 		 */
-		LAST_CONTROL_ACTION(Doc.of(OpenemsType.STRING));
+		LAST_CONTROL_ACTION(Doc.of(OpenemsType.STRING)),
+
+		/**
+		 * Writable at runtime (e.g. from the UI or a Controller): sets the
+		 * device-side maximum State-of-Charge (0-100 %) up to which the battery may
+		 * charge, via {@code BAT_M0_SOC_MAX}/{@code BAT_M0_SOC_MODE=manual} on the
+		 * same {@code /api/config/batteries} endpoint already used for
+		 * {@code HYB_EM_POWER}/{@code HYB_EVU_CHARGEFROMGRID}. Only takes effect
+		 * when {@code ControlMode != READ_ONLY} (same as all other writes) -
+		 * ignored otherwise. Independent of the schedule/grid-power write path
+		 * (not throttled by {@code writeDeadbandWatt}/{@code minWriteIntervalSeconds},
+		 * since it is a deliberate, infrequent user action, not a continuous
+		 * regulation value).
+		 */
+		SET_MAX_SOC(Doc.of(OpenemsType.INTEGER) //
+				.unit(Unit.PERCENT) //
+				.accessMode(AccessMode.READ_WRITE) //
+				.text("Maximaler Lade-SoC (0-100 %), device-seitig ueber BAT_M0_SOC_MAX durchgesetzt"));
 
 		private final Doc doc;
 
@@ -324,5 +343,35 @@ public interface FroniusEssJson extends ManagedSymmetricEss, OpenemsComponent {
 	 */
 	public default void _setLastControlAction(String value) {
 		this.getLastControlActionChannel().setNextValue(value);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#SET_MAX_SOC}.
+	 *
+	 * @return the Channel
+	 */
+	public default IntegerWriteChannel getSetMaxSocChannel() {
+		return this.channel(ChannelId.SET_MAX_SOC);
+	}
+
+	/**
+	 * Gets the last confirmed max-SoC setpoint. See {@link ChannelId#SET_MAX_SOC}.
+	 *
+	 * @return the Channel {@link Value}
+	 */
+	public default Value<Integer> getSetMaxSoc() {
+		return this.getSetMaxSocChannel().value();
+	}
+
+	/**
+	 * Sets a new max-SoC setpoint (0-100 %) to be written to the device. See
+	 * {@link ChannelId#SET_MAX_SOC}.
+	 *
+	 * @param value the next write value
+	 * @throws io.openems.common.exceptions.OpenemsError.OpenemsNamedException on
+	 *                                                                             error
+	 */
+	public default void setMaxSoc(Integer value) throws io.openems.common.exceptions.OpenemsError.OpenemsNamedException {
+		this.getSetMaxSocChannel().setNextWriteValue(value);
 	}
 }
