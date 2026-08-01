@@ -30,10 +30,12 @@ import io.openems.common.bridge.http.api.HttpResponse;
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleServiceDefinition;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
+import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.ess.api.ManagedSymmetricEss;
 import io.openems.edge.ess.api.SymmetricEss;
 import io.openems.edge.ess.power.api.Power;
+import io.openems.edge.meter.api.ElectricityMeter;
 import io.openems.edge.timedata.api.Timedata;
 import io.openems.edge.timedata.api.TimedataProvider;
 import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
@@ -95,6 +97,20 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	@Reference
 	private Power power;
 
+	// Used only by applyGridPowerTarget() (GRID_POWER_TARGET mode) to look up
+	// the configured grid meter Component by ID at write-time and read its
+	// current ActivePower - see Config#gridMeterId() and readme.adoc for why
+	// this is needed (translating a desired battery power into the correct
+	// HYB_EM_POWER grid target). Unlike an earlier, rejected ComponentManager
+	// lookup into a specific Controller type, this reads a raw measurement from
+	// a designated sibling Meter Component - the same kind of sensor-data
+	// access this bundle already does for its own readings, not a reach into
+	// another Component's decision-making.
+	@Reference
+	private ComponentManager componentManager;
+
+	private String gridMeterId;
+
 	// Optional Timedata reference so CalculateEnergyFromPower can look up the
 	// last known cumulative value across an Edge restart instead of always
 	// starting the accumulation over at zero.
@@ -151,6 +167,7 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 				+ "/solar_api/v1/GetStorageRealtimeData.cgi?Scope=Device&DeviceId=" + config.deviceId();
 
 		this.controlMode = config.controlMode();
+		this.gridMeterId = config.gridMeterId();
 		this.writeDeadbandWatt = Math.max(0, config.writeDeadbandWatt());
 		this.minWriteIntervalMillis = Math.max(1, config.minWriteIntervalSeconds()) * 1000L;
 		this.allowGridCharging = config.allowGridCharging();
@@ -707,25 +724,102 @@ public class FroniusEssJsonImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * GRID_POWER_TARGET translation: passes {@code activePower} straight through
-	 * as {@code HYB_EM_POWER}, i.e. as a target power AT THE GRID CONNECTION
-	 * POINT for the whole system (PV+Battery+Grid), NOT as battery power. This
-	 * deliberately reinterprets the setpoint's meaning - see readme.adoc.
+	 * GRID_POWER_TARGET translation: {@code HYB_EM_POWER} is a target power AT
+	 * THE GRID CONNECTION POINT for the whole system (PV+Battery+Grid), NOT
+	 * battery power - see readme.adoc. {@code activePower}, however, is what
+	 * every standard OpenEMS Ess-Controller (Balancing, FixActivePower, Cycle,
+	 * ...) actually computes: a desired BATTERY power. An earlier version wrote
+	 * {@code activePower} straight through as {@code HYB_EM_POWER}, silently
+	 * reinterpreting its meaning - correct only for a purpose-built Controller
+	 * that itself computes a grid target, wrong for every standard Controller.
 	 *
-	 * @param activePower the Solver-resolved ActivePower setpoint in [W],
-	 *                        written through 1:1 as the grid target
+	 * <p>
+	 * This converts the desired battery power into the correct grid target
+	 * instead, so standard Controllers work correctly and unchanged - the same
+	 * as they already do with {@link #applyScheduleBased}. Energy balance at the
+	 * grid connection point (ignoring conversion losses):
+	 *
+	 * <pre>
+	 * Consumption = Production + Grid + EssActivePower
+	 * =&gt; Grid = Consumption - Production - EssActivePower
+	 * </pre>
+	 *
+	 * <p>
+	 * Substituting {@code Consumption} using the CURRENTLY measured (not
+	 * desired) Grid and Ess values - which also satisfy the same balance
+	 * equation for "right now" - eliminates the need to separately read
+	 * Production/Consumption at all:
+	 *
+	 * <pre>
+	 * Grid_target = Grid_now + EssActivePower_now - EssActivePower_desired
+	 * </pre>
+	 *
+	 * <p>
+	 * {@code Grid_now} comes from {@link Config#gridMeterId}, {@code
+	 * EssActivePower_now} from this Component's own {@link #getActivePower()}
+	 * (no extra reference needed), {@code EssActivePower_desired} is
+	 * {@code activePower}. The {@code HYB_EM_POWER} sign convention (positive =
+	 * draw from grid, negative = feed to grid) is confirmed against the
+	 * batcontrol reference implementation's own docstring (not guessed) - see
+	 * readme.adoc - and matches the standard OpenEMS {@code MeterType.GRID}
+	 * convention used by {@code Grid_now}, so no extra sign flip is needed
+	 * either. Both confirmed correct on live hardware (charge and discharge
+	 * direction each tested individually).
+	 *
+	 * <p>
+	 * Precision caveat, confirmed on live hardware: unlike {@link
+	 * #applyScheduleBased}, where the device's own automatic PV/consumption
+	 * tracking still runs within whatever ceiling/floor was last written,
+	 * {@code HYB_EM_MODE=1} disables that tracking entirely - {@code
+	 * HYB_EM_POWER} is a fixed target the device holds until the next write.
+	 * Since {@code Grid_now}/{@code EssActivePower_now} are only a snapshot at
+	 * write time, {@code Battery_actual = Battery_desired + ΔConsumption -
+	 * ΔProduction} for any point in time before the next write - i.e. the
+	 * achieved battery power drifts from the requested one by however much
+	 * production/consumption change since the last write (bounded by {@code
+	 * writeDeadbandWatt}/{@code minWriteIntervalSeconds}, same throttling as
+	 * {@link #applyScheduleBased}). Observed in practice: several hundred W to
+	 * over 1 kW deviation under fluctuating PV with a 30 s/200 W throttle.
+	 * {@code Config#allowGridCharging} (see below) bounds the practical impact
+	 * of this for charging specifically (deviation cannot turn into unwanted
+	 * grid import), but does not make the setpoint itself more precise - if
+	 * that matters for a given use case, shortening
+	 * {@code minWriteIntervalSeconds} is the only lever, at the cost of more
+	 * frequent, unverified-at-high-frequency writes to
+	 * {@code /api/config/batteries} (see readme.adoc).
+	 *
+	 * @param activePower the Solver-resolved ActivePower setpoint in [W] -
+	 *                        DESIRED BATTERY power (negative = charge, positive
+	 *                        = discharge), same as for
+	 *                        {@link #applyScheduleBased}
 	 * @return a human-readable description of the action taken, for
 	 *         {@link #_setLastControlAction}
 	 * @throws Exception on any communication, authentication or verification
-	 *                        error
+	 *                        error, or if {@link Config#gridMeterId} does not
+	 *                        resolve to an existing, enabled Component
 	 */
 	private String applyGridPowerTarget(int activePower) throws Exception {
+		ElectricityMeter gridMeter = this.componentManager.getComponent(this.gridMeterId);
+		var gridActivePowerNow = gridMeter.getActivePower().orElse(0);
+		var essActivePowerNow = this.getActivePower().orElse(0);
+		var gridPowerTarget = gridActivePowerNow + essActivePowerNow - activePower;
+
 		var settings = new JsonObject();
 		settings.addProperty("HYB_EM_MODE", 1); // 1 = manual/adjustable, 0 = automatic
-		settings.addProperty("HYB_EVU_CHARGEFROMGRID", true); // allow the manual target to draw from grid if needed
-		settings.addProperty("HYB_EM_POWER", activePower);
+		// Same Config#allowGridCharging() flag used by SCHEDULE_BASED - see
+		// syncGridChargeFlag() and this method's Javadoc for why an earlier version
+		// hardcoding this to true was a real problem: the write-throttling-induced
+		// staleness (see Javadoc) can momentarily compute a gridPowerTarget that
+		// implies more charging than current PV actually supports, and with this
+		// hardcoded to true the device would happily draw the shortfall from the
+		// grid instead of just charging less than requested.
+		settings.addProperty("HYB_EVU_CHARGEFROMGRID", this.allowGridCharging);
+		settings.addProperty("HYB_EM_POWER", gridPowerTarget);
 		this.controlClient.writeBatteryConfig(settings);
-		return "GRID_POWER_TARGET: HYB_EM_POWER " + activePower + " W (Netz-Sollwert, NICHT Batterieleistung!)";
+		return "GRID_POWER_TARGET: HYB_EM_POWER " + gridPowerTarget + " W (aus " + this.gridMeterId + "="
+				+ gridActivePowerNow + " W + Batterie-Ist=" + essActivePowerNow
+				+ " W, um Batterie-Soll=" + activePower + " W zu erreichen), Netzladen "
+				+ (this.allowGridCharging ? "erlaubt" : "gesperrt");
 	}
 
 	/**

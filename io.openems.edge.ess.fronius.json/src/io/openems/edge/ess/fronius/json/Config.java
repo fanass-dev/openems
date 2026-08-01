@@ -42,9 +42,10 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 					+ "SCHEDULE_BASED: steuert ueber Fronius Time-of-Use-Zeitplaene (CHARGE_MIN erzwingt "
 					+ "Netzladen, DISCHARGE_MAX begrenzt/sperrt Entladen) - naeher am Fronius-Design, empfohlen "
 					+ "fuer normale Ess-Controller. GRID_POWER_TARGET: setzt einen Netz-Leistungssollwert "
-					+ "(HYB_EM_POWER) fuer die GESAMTE Anlage (PV+Speicher+Netz), nicht nur die Batterie - der "
-					+ "ActivePower-Sollwert wird dabei 1:1 als Netz-Zielwert interpretiert; nur fuer erfahrene "
-					+ "Nutzer mit eigenem, dafuer ausgelegtem Controller.")
+					+ "(HYB_EM_POWER) fuer die GESAMTE Anlage (PV+Speicher+Netz), nicht nur die Batterie - dieser "
+					+ "wird aus dem gewuenschten Batterie-Sollwert automatisch unter Einbeziehung von "
+					+ "'Netz-Zaehler-ID' (siehe unten) umgerechnet, sodass normale Ess-Controller trotzdem korrekt "
+					+ "funktionieren (siehe readme.adoc).")
 	ControlMode controlMode() default ControlMode.READ_ONLY;
 
 	@AttributeDefinition(name = "Benutzername (Service-Account)", //
@@ -57,15 +58,20 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 			type = AttributeType.PASSWORD)
 	String password() default "";
 
-	@AttributeDefinition(name = "Netzladen erlauben (nur SCHEDULE_BASED)", //
-			description = "Steuert unabhaengig vom sonstigen Sollwert das Fronius-Flag HYB_EVU_CHARGEFROMGRID. "
+	@AttributeDefinition(name = "Netzladen erlauben", //
+			description = "Steuert unabhaengig vom sonstigen Sollwert das Fronius-Flag HYB_EVU_CHARGEFROMGRID - "
+					+ "gilt fuer BEIDE Steuerungsmodi (SCHEDULE_BASED und GRID_POWER_TARGET), da batcontrols "
+					+ "Referenzimplementierung dieses Flag im selben Aufruf wie HYB_EM_MODE/HYB_EM_POWER setzt. "
 					+ "false (Standard, z. B. fuer den Sommer/Fruehjahr-Herbst-Betrieb mit Controller.Ess.GridOptimizedCharge): "
-					+ "CHARGE_MIN wirkt nur als Kappung des PV-Ueberschusses, es wird NIE zusaetzlich aus dem Netz geladen, "
-					+ "auch wenn der berechnete Sollwert kurzfristig nicht allein aus PV gedeckt werden kann. true (z. B. fuer "
-					+ "den Winterbetrieb mit Controller.Ess.Time-Of-Use-Tariff im Modus CHARGE_CONSUMPTION): CHARGE_MIN darf "
-					+ "den Sollwert auch durch Netzbezug erzwingen (z. B. nachts bei guenstigem Tarif ohne PV). Diese beiden "
-					+ "Betriebsarten aktuell manuell umschalten (z. B. per Config-Wechsel im Fruehjahr/Herbst); eine "
-					+ "automatische, jahreszeit- oder KI-basierte Umschaltung ist ein moeglicher spaeterer Ausbauschritt.")
+					+ "bei SCHEDULE_BASED wirkt CHARGE_MIN nur als Kappung des PV-Ueberschusses, es wird NIE zusaetzlich aus "
+					+ "dem Netz geladen, auch wenn der berechnete Sollwert kurzfristig nicht allein aus PV gedeckt werden "
+					+ "kann; bei GRID_POWER_TARGET begrenzt das ebenso ungewollten Netzbezug, falls die durch die "
+					+ "Schreib-Drosselung (writeDeadbandWatt/minWriteIntervalSeconds) bedingte Traegheit kurzzeitig mehr "
+					+ "Ladeleistung anfordert, als PV gerade liefert. true (z. B. fuer den Winterbetrieb mit "
+					+ "Controller.Ess.Time-Of-Use-Tariff im Modus CHARGE_CONSUMPTION): darf den Sollwert auch durch "
+					+ "Netzbezug erzwingen (z. B. nachts bei guenstigem Tarif ohne PV). Diese beiden Betriebsarten aktuell "
+					+ "manuell umschalten (z. B. per Config-Wechsel im Fruehjahr/Herbst); eine automatische, "
+					+ "jahreszeit- oder KI-basierte Umschaltung ist ein moeglicher spaeterer Ausbauschritt.")
 	boolean allowGridCharging() default false;
 
 	@AttributeDefinition(name = "Totzone fuer Schreibvorgaenge [W]", //
@@ -106,6 +112,20 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 					+ "SC' (Feld 'Max. output power'): 12000 VA. Unbedingt am eigenen Typenschild/Datenblatt "
 					+ "pruefen und bei Abweichung anpassen.")
 	int maxApparentPowerVoltAmpere() default 12000;
+
+	@AttributeDefinition(name = "Netz-Zaehler-ID (nur GRID_POWER_TARGET)", //
+			description = "Component-ID des ElectricityMeter, der den Netzanschlusspunkt DIESER Anlage (derselbe "
+					+ "GEN24, an dem auch dieses Ess haengt) misst - z. B. die zugehoerige "
+					+ "Meter.Fronius.SmartMeterJson-Instanz. NICHT '_sum' verwenden: falls der Edge mehrere, "
+					+ "physisch getrennte Anlagen ueberwacht (unterschiedliche Netzanschluesse), waere die "
+					+ "Edge-weite Summe falsch fuer die Umrechnung. Wird verwendet, um den vom Solver berechneten "
+					+ "Batterie-Sollwert in den korrekten HYB_EM_POWER-Netz-Sollwert umzurechnen: "
+					+ "HYB_EM_POWER = aktueller Netzbezug + aktuelle Batterieleistung - gewuenschte Batterieleistung "
+					+ "(Vorzeichenkonvention lt. batcontrol-Referenzimplementierung: HYB_EM_POWER positiv = "
+					+ "Netzbezug gewuenscht, negativ = Einspeisung gewuenscht - identisch zur "
+					+ "OpenEMS-MeterType.GRID-Konvention). Nur relevant, wenn 'Steuerungsmodus' auf "
+					+ "GRID_POWER_TARGET steht.")
+	String gridMeterId() default "meter0";
 
 	String webconsole_configurationFactory_nameHint() default "Fronius Battery Storage (JSON) [{id}]";
 }

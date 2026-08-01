@@ -261,15 +261,116 @@ gelöscht. Das Bundle sichert deshalb automatisch die zum Aktivierungszeitpunkt
 bestehende Zeitsteuerung (siehe "Backup/Restore bestehender Zeitsteuerung"
 unten), bevor es zum ersten Mal selbst schreibt.
 
-**`GRID_POWER_TARGET` (nur für erfahrene Nutzer)** - `activePower` wird 1:1
-als `HYB_EM_POWER` (manueller Modus, `HYB_EM_MODE=1`) geschrieben. **Wichtig:**
-das ist ein Sollwert **am Netzanschlusspunkt der gesamten Anlage**
-(PV + Speicher + Netz kombiniert), nicht die Batterieleistung selbst! Ein
-Standard-Ess-Controller wie `Controller.Ess.Balancing` berechnet seinen
-Sollwert aber als gewünschte **Batterieleistung** - in diesem Modus bekommt
-der Wert also eine andere Bedeutung als vom Controller beabsichtigt. Diesen
-Modus daher nur mit einem selbst geschriebenen, darauf abgestimmten
-Controller verwenden, nicht mit den Standard-Ess-Controllern.
+**`GRID_POWER_TARGET`** - schreibt `HYB_EM_MODE=1` (manueller statt
+automatischer Modus) und `HYB_EM_POWER` über `POST /api/config/batteries`
+(ein komplett anderer Endpunkt als `SCHEDULE_BASED`, siehe unten). Anders als
+`SCHEDULE_BASED` erzwingt das einen echten, sofortigen Momentanwert - weil
+`HYB_EM_MODE=1` die automatische Regellogik des GEN24 komplett abschaltet,
+gibt es keine autonome Zwischeninstanz mehr, die den Wert nur als Ober-/
+Untergrenze interpretiert.
+
+WICHTIG: `HYB_EM_POWER` ist ein Sollwert **am Netzanschlusspunkt der
+gesamten Anlage** (PV + Speicher + Netz kombiniert), NICHT die
+Batterieleistung selbst - ein Standard-Ess-Controller wie
+`Controller.Ess.Balancing` berechnet seinen Sollwert aber als gewünschte
+**Batterieleistung**. Eine frühere Version schrieb `activePower` deshalb 1:1
+als `HYB_EM_POWER` - das war nur mit einem eigens dafür geschriebenen
+Controller richtig, mit jedem Standard-Controller falsch.
+
+**Behoben**: `applyGridPowerTarget()` rechnet den gewünschten
+Batterie-Sollwert jetzt selbst in den korrekten Netz-Sollwert um, sodass
+Standard-Controller unverändert funktionieren - genau wie bei
+`SCHEDULE_BASED`. Energiebilanz am Netzanschlusspunkt (Umwandlungsverluste
+vernachlässigt):
+
+```
+Verbrauch = Erzeugung + Netz + Batterieleistung
+=> Netz = Verbrauch - Erzeugung - Batterieleistung
+```
+
+Durch Einsetzen der AKTUELL gemessenen (nicht der gewünschten) Netz- und
+Batteriewerte - die dieselbe Bilanzgleichung für den "jetzigen" Moment
+ebenfalls erfüllen - lässt sich Verbrauch/Erzeugung eliminieren:
+
+```
+Netz_Ziel = Netz_jetzt + Batterieleistung_jetzt - Batterieleistung_gewuenscht
+```
+
+`Netz_jetzt` kommt aus dem per `gridMeterId`-Config-Feld konfigurierten
+`ElectricityMeter` (z. B. `meter0`), `Batterieleistung_jetzt` aus dem eigenen
+`getActivePower()` dieser Component (kein zusätzlicher Reference nötig),
+`Batterieleistung_gewuenscht` ist `activePower`. Gegenprobe: bei
+`Batterieleistung_gewuenscht = Batterieleistung_jetzt` (Batterie soll sich
+nicht ändern) ergibt sich `Netz_Ziel = Netz_jetzt` - unverändert lassen ist
+konsistent.
+
+WICHTIG (Vorzeichenkonvention `HYB_EM_POWER`, verifiziert nicht geraten): Aus
+dem Docstring von batcontrols `fronius.py` (`set_em_power()`):
+`"positive = get from grid, negative = feed to grid"`. Das entspricht
+exakt der OpenEMS-`MeterType.GRID`-Konvention (positiv = Netzbezug), die
+auch `io.openems.edge.meter.fronius.smartmeter.json` verwendet - `Netz_jetzt`
+kann also direkt verrechnet werden, ohne Vorzeichenumkehr. Diese Erkenntnis
+stammt aus der batcontrol-Quelltextrecherche, nicht aus einem Test am echten
+Gerät.
+
+WICHTIG (`gridMeterId` korrekt setzen): Muss auf den `ElectricityMeter`
+zeigen, der DENSELBEN physischen Netzanschluss misst wie das GEN24, an dem
+dieses Ess hängt - **nicht** `_sum` verwenden. Überwacht der Edge mehrere,
+physisch getrennte Anlagen (z. B. "Anlage 1" mit GEN24 und "Anlage 2" ohne
+Speicher, oder eine unabhängige Hoymiles-PV-Anlage), wäre die Edge-weite
+Summe aus `_sum` falsch für diese Umrechnung - sie würde PV-Erzeugung/Verbrauch
+einbeziehen, die mit DIESEM Netzanschlusspunkt gar nichts zu tun haben.
+
+Wie bei `SCHEDULE_BASED` gilt weiterhin: dieselbe Drosselung
+(`writeDeadbandWatt`/`minWriteIntervalSeconds`) greift auch hier, `HYB_EM_POWER`
+wird also trotz "exaktem Sollwert" nicht öfter als alle paar Sekunden
+aktualisiert - kein Echtzeitregelkreis. Auch die unter "Zuverlässigkeit von
+Wertänderungen" beschriebenen offenen Fragen (persistiert Fronius
+`/api/config/batteries` beim reinen Werteupdate zuverlässig? Gibt es dort
+dasselbe stille "Erfolg gemeldet, aber nicht angewendet"-Problem wie bei
+`/api/config/timeofuse`?) sind für diesen Endpunkt ungetestet - der
+Deaktivieren/Reaktivieren-Workaround (`writeTimeOfUseForced`) gilt nur für
+die Zeitsteuerung, nicht für `applyGridPowerTarget()`.
+
+WICHTIG (Genauigkeit auf echter Anlage getestet - Trägheit wirkt hier stärker
+als bei `SCHEDULE_BASED`): Live getestet mit `Controller.Ess.FixActivePower`
+(beide Richtungen, Laden und Entladen) - Vorzeichenkonvention und
+Grundformel bestätigt korrekt. Die Genauigkeit war dabei spürbar geringer
+als erwartet: bei schwankender PV wurden Abweichungen von mehreren hundert
+Watt bis über 1 kW vom Sollwert beobachtet (bei 30 s/200 W-Drosselung).
+Grund: Anders als bei `SCHEDULE_BASED`, wo Fronius' eigene automatische
+PV-/Verbrauchsnachführung innerhalb der zuletzt geschriebenen Grenze
+weiterläuft, schaltet `HYB_EM_MODE=1` diese Nachführung komplett ab -
+`HYB_EM_POWER` ist ein fixer Wert, den das Gerät bis zum nächsten
+Schreibvorgang hält. Da `Grid_jetzt`/`Batterie_jetzt` nur eine Momentaufnahme
+zum Schreibzeitpunkt sind, gilt bis zum nächsten Schreibvorgang:
+
+```
+Batterie_tatsächlich = Batterie_gewünscht + ΔVerbrauch - ΔErzeugung
+```
+
+Die erreichte Batterieleistung weicht also um genau so viel vom
+angeforderten Wert ab, wie sich Erzeugung/Verbrauch seit dem letzten
+Schreibvorgang geändert haben. Wer das nicht tolerieren kann, muesste
+`minWriteIntervalSeconds` gezielt fuer diesen Modus verkuerzen - auf Kosten
+haeufigerer, bei diesem Endpunkt unerprobter Schreibzugriffe (siehe oben).
+
+**Deshalb (behobener Bug) `HYB_EVU_CHARGEFROMGRID` nicht mehr fest auf
+`true`**: Eine erste Version setzte dieses Flag bei `GRID_POWER_TARGET`
+bedingungslos - in Kombination mit der beschriebenen Trägheit haette das beim
+Laden zu ungewolltem Netzbezug fuehren koennen (die Traegheit fordert
+kurzzeitig mehr Ladeleistung an, als PV gerade liefert, und das Geraet haette
+sich die Differenz anstandslos aus dem Netz geholt). `applyGridPowerTarget()`
+verwendet jetzt dieselbe `Config#allowGridCharging`-Einstellung wie
+`SCHEDULE_BASED` (Standard `false`) - damit begrenzt sich die tatsächliche
+Ladeleistung im Zweifel auf das, was PV gerade hergibt, statt aus dem Netz
+nachzuladen. Die Ungenauigkeit selbst bleibt davon unberührt (das ist ein
+bewusst in Kauf genommener Kompromiss, kein behobener Fehler), nur der
+ungewollte Netzbezug als Konsequenz daraus wird vermieden. Bestaetigt, dass
+batcontrols Referenzimplementierung `HYB_EVU_CHARGEFROMGRID` ebenfalls im
+selben Aufruf wie `HYB_EM_MODE`/`HYB_EM_POWER` setzt (`set_wr_parameters()`),
+nicht nur getrennt fuer die Zeitsteuerung - spricht dafuer, dass es auch im
+manuellen Modus wirkt, auch wenn das nicht separat live verifiziert wurde.
 
 === Sicherheitsmechanismen im Bundle
 
@@ -726,11 +827,12 @@ Danach "Resolve" und "Update" in der `EdgeApp.bndrun`-Ansicht ausführen.
   exakten Momentanwert im Sinne von "genau X W, nicht mehr und nicht
   weniger" - insbesondere Entladen kann NICHT erzwungen werden
   (`DISCHARGE_MIN` existiert zwar, ist aber wegen Instabilitaet mit
-  `Controller.Ess.Balancing` bewusst nicht im Einsatz, siehe oben);
-  `GRID_POWER_TARGET` interpretiert den Sollwert als Netz- statt
-  Batterieleistung - beides ist eine Näherung an das, was ein
-  Standard-Ess-Controller eigentlich erwartet (siehe Abschnitt "Zwei
-  Steuerungsmodi").
+  `Controller.Ess.Balancing` bewusst nicht im Einsatz, siehe oben).
+  `GRID_POWER_TARGET` liefert einen echten Momentanwert und rechnet den
+  Batterie- in einen Netz-Sollwert um (siehe Abschnitt "Zwei
+  Steuerungsmodi"), ist dabei aber auf einen korrekt konfigurierten
+  `gridMeterId` angewiesen und ungetestet bzgl. derselben
+  Zuverlässigkeits-Fragen wie `SCHEDULE_BASED`.
 * Keine Blindleistungssteuerung möglich - `reactivePower` in
   `applyPower()` wird ignoriert.
 * Reaktionszeit der Steuerung ist durch den 5-Sekunden-Hintergrund-Thread
