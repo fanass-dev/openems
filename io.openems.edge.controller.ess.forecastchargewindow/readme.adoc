@@ -1,0 +1,143 @@
+= Controller Ess Forecast Charge Window
+
+Nicht Teil des offiziellen OpenEMS-Projekts (custom Bundle dieser Installation).
+
+== Namensgebung (wichtig zum Verständnis)
+
+Der Name "Forecast Charge Window" beschreibt nur die **eine Hälfte** dessen,
+was dieser Controller tut - die PV-Prognose-Logik. Er hebt den Ladeblock
+tatsächlich aus **zwei** unabhängigen Gründen auf: PV-Prognose **und**
+negativer Börsenpreis (siehe "Zweck" unten). Der Preis-Anteil ist gleich
+wichtig wie der Prognose-Anteil, kommt im Namen aber nicht vor - bewusste
+Entscheidung des Betreibers, den ursprünglichen (historisch gewachsenen)
+Namen beizubehalten, statt umzubenennen. Beim Lesen von Code/Config also
+nicht von "Forecast" im Namen auf "nur Prognose-basiert" schließen - diese
+gesamte readme.adoc bewusst als Kompensation dafür ausführlich halten.
+
+== Zweck
+
+Ergänzt ein zeitgesteuertes `Controller.Symmetric.LimitActivePower` (z. B.
+über `Scheduler.JSCalendar` nur 00:00-12:00 aktiv, Mai-September,
+`maxChargePower=0`, um das Laden auf die Mittagsspitze zu konzentrieren -
+weil zu dieser Zeit oft keine Einspeisevergütung gezahlt wird): dieser
+Controller hebt den morgendlichen Ladeblock aus zwei unabhängigen Gründen
+auf:
+
+* **PV-Prognose** (einmal täglich geprüft): wenn die Produktionsprognose ab
+  einer konfigurierten Uhrzeit (Standard 12:00) nur noch wenig Ertrag
+  erwarten lässt - z. B. wenn nur der Vormittag sonnig ist und ab Mittag
+  Regen einsetzt -, wird der Block für den **restlichen Tag** aufgehoben.
+  Ohne diese Ausnahme würde der PV-Überschuss des Vormittags ungenutzt bzw.
+  unvergütet ins Netz eingespeist, während die Batterie danach mangels Sonne
+  gar nicht mehr voll würde.
+* **Negativer Börsenpreis** (fortlaufend geprüft): wenn der aktuelle
+  Day-Ahead-Verkaufspreis (über `TariffManager`/`TariffGridSell`, z. B.
+  `Tariff.Manual.EEG2025.GridSell`) negativ ist, wird der Block **sofort**
+  aufgehoben und automatisch wieder aktiviert, sobald der Preis zurück ins
+  Positive dreht (außer die Prognose-Aufhebung greift zu diesem Zeitpunkt
+  ebenfalls). Grund: eine Einspeisung bei negativem Preis kostet Geld -
+  besser die Batterie laden, statt einzuspeisen, unabhängig davon, ob das
+  gerade in die Mittagskonzentration passt.
+
+Beide Gründe wirken auf denselben Hebel (`maxChargePower` des
+Ziel-Controllers) und sind mit ODER verknüpft: es reicht, wenn einer der
+beiden zutrifft, damit der Block aufgehoben ist.
+
+== Funktionsweise
+
+Geprüft im normalen Controller-`run()` (jeden Cycle, kein eigener
+Hintergrund-Thread nötig):
+
+* Bei Datumswechsel (neuer Tag) wird die Prognose-Entscheidung des Vortages
+  zurückgesetzt (`forecastLiftedToday = false`) - die Preis-Entscheidung
+  braucht keinen Reset, sie wird ohnehin jeden Cycle neu bewertet.
+* **Prognose-Prüfzeit** (Standard 08:00, einmal täglich): summiert die
+  Produktionsprognose (über `PredictorManager`) ab `afternoonWindowStart`
+  (Standard 12:00) bis Tagesende. Liegt die Summe unter
+  `minRemainingProductionWh`, wird `forecastLiftedToday` für den Rest des
+  Tages auf `true` gesetzt.
+* **Preis-Prüfung** (jeden Cycle): fragt bei `TariffManager` den
+  Verkaufspreis für die aktuelle Viertelstunde ab.
+* Aus beiden Zuständen wird der Ziel-Zustand
+  (`forecastLiftedToday || preisAktuellNegativ`) berechnet. Ändert sich
+  dieser Ziel-Zustand gegenüber dem zuletzt tatsächlich geschriebenen Wert,
+  wird `maxChargePower` des Ziel-Controllers entsprechend auf
+  `blockedMaxChargePower` (Standard 0) oder `unblockedMaxChargePower`
+  (Standard 1.000.000 W, praktisch unbegrenzt) gesetzt - nur bei einer
+  tatsächlichen Änderung, um unnötige Reaktivierungen des Ziel-Controllers
+  zu vermeiden.
+
+Das Schreiben erfolgt über
+`ComponentManager#handleUpdateComponentConfigRequest` (derselbe Weg wie
+UI/Web Console) - das löst die normale Deaktivierung/Reaktivierung des
+Ziel-Controllers mit dem neuen Wert aus, es wird keine Fronius- oder
+Ess-spezifische Logik berührt.
+
+== Warum das JSCalendar-Zeitfenster von `ctrlLimitActivePower0` bestehen bleibt
+
+Dieser Controller ersetzt **nicht** das Mai-September-/00:00-12:00-Fenster
+im JSCalendar. Grund: außerhalb dieses Fensters gibt es ohnehin keinen Block
+- `ctrlLimitActivePower0` läuft dort gar nicht, und normales `Balancing`
+vermeidet von sich aus unnötige Einspeisung, solange die Batterie noch
+Kapazität hat. Die Preis-Prüfung dieses Controllers ist nur als Override für
+den Block relevant, den `ctrlLimitActivePower0` innerhalb seines eigenen
+Zeitfensters setzt - außerhalb davon gibt es nichts zu überschreiben.
+
+== Fail-safe ohne Prognose bzw. Preis
+
+Liefert `PredictorManager.getPrediction(...)` keine (oder eine leere)
+Prognose - z. B. während der ersten ca. 30 Tage nach Einrichtung eines
+`Predictor.Production.LinearModel` (braucht mindestens 30 Tage historische
+Trainingsdaten) - oder liefert `TariffManager.getGridSellDayAheadPrices()`
+keinen Preis für den aktuellen Zeitpunkt (kein `TariffGridSell`-Provider
+konfiguriert, oder Abruf fehlgeschlagen), zählt der jeweilige Grund einfach
+nicht als "Aufhebung rechtfertigend". Ist keiner der beiden Gründe erfüllt,
+bleibt der Block wie gewohnt aktiv (`blockedMaxChargePower`). Der Controller
+kann also nur zusätzlichen Nutzen bringen, nie eine Verschlechterung
+gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
+
+== Voraussetzungen
+
+* Ein aktiver `Predictor.*` für den in `productionChannelId` referenzierten
+  `_sum`-Channel - empfohlen `Predictor.Production.LinearModel` (nutzt
+  Wetterprognose, nicht nur historische Werte), passend zum
+  `sourceChannel`-Feld dort (Standard beider Seiten:
+  `UnmanagedProductionActivePower`).
+* Optional, für die Preis-Prüfung: eine aktive `TariffGridSell`-Instanz,
+  z. B. `Tariff.Manual.EEG2025.GridSell` (braucht ein ENTSO-E-Konto samt
+  Security Token, `Bidding Zone` = `GERMANY`). Ohne diese Komponente
+  liefert `TariffManager` einfach keinen Preis, die Preis-Prüfung greift
+  dann nie (fail-safe, siehe oben) - kein Fehler, kein Absturz.
+* Dieser Controller muss selbst im Scheduler aktiv sein (z. B. bei
+  `Scheduler.JSCalendar` in `alwaysRunBeforeController_ids`/
+  `alwaysRunAfterController_ids` eintragen) - sonst wird `run()` nie
+  aufgerufen und weder die Prognose- noch die Preis-Prüfung finden statt.
+* `targetControllerId` muss auf eine echte `Controller.Symmetric.LimitActivePower`-
+  Instanz zeigen, deren `maxChargePower`-Feld diesem Controller "gehört" -
+  andere Config-Änderungen an dieser Instanz nicht parallel von Hand
+  vornehmen, sie würden bei der nächsten Prüfung überschrieben.
+
+== Diagnose-Channels
+
+* `LastDecision` - Klartext der zuletzt getroffenen Entscheidung.
+* `ForecastedAfternoonProduction` - zuletzt berechnete Prognosesumme [Wh].
+* `ForecastLiftedToday` - `true`, wenn die heutige Prognose-Prüfung den Block
+  für den Rest des Tages aufgehoben hat.
+* `PriceCurrentlyNegative` - `true`, wenn der aktuelle Börsen-Verkaufspreis
+  negativ ist.
+* `CurrentlyBlocked` - `true`, wenn der Ziel-Controller aktuell tatsächlich
+  auf `blockedMaxChargePower` steht (kombiniertes Ergebnis).
+
+== Bekannte Einschränkungen
+
+* `minRemainingProductionWh` muss an die eigene Anlagengröße angepasst
+  werden - kein sinnvoller universeller Standardwert möglich.
+* Die Prüfzeiten sind feste Uhrzeiten, keine Sonnenauf-/-untergangsberechnung
+  - bei stark wechselnden Jahreszeiten ggf. saisonal anpassen (z. B. per
+  zweiter Config-Instanz + Scheduler-Zeitfenster, analog zum Vorgehen bei
+  `ctrlLimitActivePower0` selbst).
+* Trifft die Prognose nicht zu (z. B. unerwartet doch noch Sonne am
+  Nachmittag), bleibt der prognosebasierte Anteil der Aufhebung trotzdem bis
+  zum nächsten Tag bestehen - es gibt keine Korrektur untertags in die
+  andere Richtung. Der preisbasierte Anteil korrigiert sich dagegen laufend
+  von selbst.
