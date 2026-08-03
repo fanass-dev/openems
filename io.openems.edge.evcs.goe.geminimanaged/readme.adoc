@@ -1,0 +1,124 @@
+= EVCS go-e Gemini Managed (JSON API v2)
+
+Nicht Teil des offiziellen OpenEMS-Projekts (custom Bundle dieser Installation).
+
+== Zweck
+
+Steuert einen go-e Gemini Ladepunkt aktiv (PV-Überschussladen via
+`Controller.Evcs`) über die öffentlich dokumentierte, aber inoffizielle
+go-e-API-v2 (https://github.com/goecharger/go-eCharger-API-v2, Endpunkte
+`/api/status` und `/api/set`).
+
+== Warum ein separates Bundle statt das bestehende `Evcs.Goe.Http` zu erweitern
+
+Das mitgelieferte `io.openems.edge.evcs.goe`-Bundle ("Evcs.Goe.Http"/
+"Evcs.Goe.Modbus") implementiert für die Gemini-Baureihe **kein**
+`ManagedEvcs` - auch nicht, wenn dessen `readOnly`-Config-Feld auf `false`
+gesetzt wird (dieses Feld beeinflusst nur den gemeldeten `MeterType`, keine
+tatsächliche Schreibfähigkeit). `Controller.Evcs` kann daher grundsätzlich
+nicht an eine `Evcs.Goe.Http`-Instanz binden, unabhängig von der
+Konfiguration - siehe Analyse im Chatverlauf, bestätigt gegen den aktuellen
+`develop`-Branch von github.com/OpenEMS/openems.
+
+Laut OpenEMS-Community-Forum
+(https://community.openems.io/t/go-e-gemini-wallbox-an-fenecon-home-10/10217)
+ist das kein Versehen: es gab wiederholte Entwicklerberichte, dass ältere
+go-e-Firmwareversionen nicht für dauerhaftes, hochfrequentes Beschreiben
+ausgelegt waren, was zu Geräteausfällen führte - deshalb ist offizielle
+Schreibunterstützung für Gemini bislang nicht in OpenEMS gelandet.
+
+Dieses Bundle wurde bewusst als **separate, neue Komponente** gebaut (nicht
+als Änderung an `io.openems.edge.evcs.goe`), um:
+
+* die bestehende, produktiv laufende Nur-Lese-Installation unangetastet zu
+  lassen (Downgrade-Pfad: einfach diese Komponente deaktivieren, die alte
+  bleibt unverändert nutzbar),
+* das Schreibverhalten bewusst gedrosselt zu implementieren (siehe unten),
+  um das oben beschriebene Risiko zu adressieren, statt es zu ignorieren.
+
+== Schreibdrosselung (Antwort auf das Firmware-Risiko)
+
+Zwei voneinander unabhängige Schutzmechanismen:
+
+* **Framework-seitig** (`AbstractManagedEvcsComponent`/`WriteHandler`,
+  Standard-OpenEMS-Code, nicht Teil dieses Bundles): schreibt nur, wenn sich
+  der angeforderte Sollwert um mehr als 50 W ändert, oder wenn seit dem
+  letzten Schreiben `getWriteInterval()` Sekunden vergangen sind - kein
+  Schreiben bei stabilem Sollwert.
+* **Config-Feld `writeIntervalSeconds`** (Standard 30 s, hier überschreibt
+  dieses Bundle den OpenEMS-Standardwert explizit statt sich nur auf den
+  Default zu verlassen): steuert genau dieses Intervall. Bei Bedarf weiter
+  erhöhen, falls weiterhin Bedenken wegen Geräteverschleiß bestehen.
+
+== Nicht-blockierende Schreibzugriffe
+
+Schreibbefehle (`/api/set?amp=...&frc=...`) werden über
+`BridgeHttp#request()` **asynchron** (fire-and-forget mit Callback)
+gesendet, nicht blockierend. Das adressiert ein zweites, im
+OpenEMS-Community-Forum dokumentiertes historisches Problem bei
+go-e-Integrationen: blockierende HTTP-Aufrufe im Cycle-Schreib-Handler
+konnten frühere Implementierungen das gesamte OpenEMS zeitweise einfrieren
+lassen. Erfolg/Fehlschlag eines Schreibvorgangs wird asynchron im
+Diagnose-Channel `LastWriteFailed` sichtbar, nicht als Rückgabewert der
+synchronen `applyChargePowerLimit()`/`pauseChargeProcess()`-Methoden (die
+laut `ManagedEvcs`-Vertrag nur "wurde gesendet", nicht "wurde bestätigt",
+zurückgeben müssen).
+
+== Read-only-Schutzschalter (`readOnly`-Config-Feld)
+
+Standardmäßig `true`: die Komponente liest Status/Messwerte ganz normal,
+sendet aber **nie** Schreibbefehle - `WriteHandler` (Standard-OpenEMS-Code)
+prüft vor jedem Schreibversuch `isReadOnly()` und bricht sonst ab. Damit
+lässt sich die Komponente gefahrlos einrichten und beobachten (inkl.
+`Controller.Evcs` im Scheduler), bevor sie tatsächlich steuert - erst nach
+bewusstem Umschalten auf `false` sendet sie echte `amp`/`frc`-Befehle an die
+Wallbox. Beeinflusst auch den gemeldeten `MeterType`
+(`CONSUMPTION_METERED` vs. `MANAGED_CONSUMPTION_METERED`), analog zum
+Original-Gemini-Bundle.
+
+== API-Feld-Zuordnung (go-e API v2)
+
+[cols="1,1,1"]
+|===
+|go-e-Feld |Bedeutung |Verwendung hier
+
+|`car` |Ladezustand (0=Unknown/Error, 1=Idle, 2=Charging, 3=WaitCar, 4=Complete, 5=Error, 6=Initializing) |auf `Evcs.Status` abgebildet, Rohwert zusätzlich in `GoeCarState`
+|`amp` |zuletzt vom Gerät bestätigter Ladestrom [A] |`CurrUser` [mA]
+|`nrg` |Legacy-Energie-Array (Spannungen/Ströme/Leistung je Phase) |Spannungs-/Strom-/Leistungs-Channels von `ElectricityMeter`
+|`err` |Fehlercode |`GoeError` (Rohwert)
+|`alw` |geräteseitig aktuell freigegeben? |`AllowedToCharge`
+|`fwv` |Firmware-Version |`FirmwareVersion`
+|===
+
+Schreiben: `amp=<A>` (Ladestrom) zusammen mit `frc=2` (force On) beim Laden;
+`frc=1` (force Off) beim Pausieren. `frc=0` (Neutral, externe/App-Steuerung
+entscheidet) wird von diesem Bundle nie gesetzt - sobald diese Komponente
+aktiv ist, hat sie immer eine explizite Meinung (An oder Aus), nie "neutral".
+
+== Voraussetzungen
+
+* go-e Gemini mit aktueller Firmware (API v2, `/api/status`/`/api/set`
+  erreichbar - mit `curl http://<ip>/api/status` im Browser/Terminal
+  testbar).
+* Component-ID **muss sich von der bestehenden `Evcs.Goe.Http`-Instanz
+  unterscheiden** (Standard hier: `evcs1`, falls die alte `evcs0` heißt) -
+  beide können parallel existieren (eine liest nur, die andere steuert),
+  aber nicht auf demselben Component-ID-Namen.
+* Für PV-Überschussladen zusätzlich `Controller.Evcs` mit `Charge-Mode =
+  Use surplus power` einrichten und im Scheduler eintragen (`Evcs-ID` muss
+  auf die ID dieser neuen Komponente zeigen, nicht auf die alte
+  Nur-Lese-Instanz).
+
+== Bekannte Einschränkungen
+
+* Kein Phasenumschaltungs-Support (`psh`) - immer alle drei Phasen
+  angenommen (`PhaseRotation.L1_L2_L3`, fest).
+* Kein Display-Text (`applyDisplayText` gibt immer `false` zurück - go-e
+  Gemini hat über API v2 kein beschreibbares Display-Textfeld, anders als
+  die ältere "Charger Home"-Baureihe).
+* Firmware-/Legacy-Filter-Fallback (wie im Nur-Lese-Bundle für sehr alte
+  Firmware < 51.4) wurde bewusst weggelassen - Gemini-Geräte sollten auf
+  API-v2-fähiger Firmware laufen.
+* Nicht offiziell von go-e oder FENECON unterstützt - eigenes Risiko, siehe
+  Abschnitt oben zu Firmware-Berichten. Schreibintervall im Zweifel eher
+  großzügig (höher) statt knapp konfigurieren.

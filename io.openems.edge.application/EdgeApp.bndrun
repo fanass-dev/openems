@@ -222,7 +222,8 @@
 	bnd.identity;id='io.openems.edge.pvinverter.fronius.json',\
 	bnd.identity;id='io.openems.edge.ess.fronius.json',\
 	bnd.identity;id='io.openems.edge.pvinverter.hoymiles.opendtu',\
-	bnd.identity;id='io.openems.edge.controller.ess.forecastchargewindow'
+	bnd.identity;id='io.openems.edge.controller.ess.forecastchargewindow',\
+	bnd.identity;id='io.openems.edge.evcs.goe.geminimanaged'
 -runbundles: \
 	bcpkix;version='[1.83.0,1.83.1)',\
 	bcprov;version='[1.83.0,1.83.1)',\
@@ -503,5 +504,6 @@
 	io.openems.edge.ess.fronius.json;version=snapshot,\
 	io.openems.edge.pvinverter.fronius.json;version=snapshot,\
 	io.openems.edge.pvinverter.hoymiles.opendtu;version=snapshot,\
-	io.openems.edge.controller.ess.forecastchargewindow;version=snapshot
+	io.openems.edge.controller.ess.forecastchargewindow;version=snapshot,\
+	io.openems.edge.evcs.goe.geminimanaged;version=snapshot
 -resolve: manual
