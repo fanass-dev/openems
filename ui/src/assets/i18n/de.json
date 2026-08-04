@@ -525,6 +525,10 @@
                     "RPC_FAILED": "Befehl ausführen fehlgeschlagen",
                     "OVERALL_SYSTEM": "Gesamtsystem"
                 },
+                "FORECAST_CHARGE_WINDOW": {
+                    "PRICE": "Verkaufspreis",
+                    "NEGATIVE_PRICE_DURATION": "Negativer Preis"
+                },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Aktive Beladung aus dem Netz aktivieren",
                     "CHART_TITLE": "Aktueller Fahrplan",

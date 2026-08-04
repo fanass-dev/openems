@@ -1,0 +1,9 @@
+@if (isInitialized && component) {
+  <oe-flat-widget button [title]="component.alias" button
+    [link]="'/device/' + edge.id + newNavigationUrlSegment + '/history/' + component.id + '/forecastchargewindowchart'"
+    [icon]="{name: 'oe-time-of-use', color:'normal'}">
+    <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.NEGATIVE_PRICE_DURATION' | translate"
+      [value]="negativePriceDurationOverPeriod | formatSecondsToDuration">
+    </oe-flat-widget-line>
+  </oe-flat-widget>
+}

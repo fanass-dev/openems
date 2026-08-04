@@ -6,6 +6,7 @@ import { EdgeComponent } from "./edge/edge.component";
 import { ControllerChannelThresholdOverviewComponent as ChannelthresholdChartOverviewComponent } from "./edge/history/Controller/ChannelThreshold/overview/overview";
 import { ControllerEnerixOverviewComponent as EnerixOverviewComponent } from "./edge/history/Controller/EnerixControl/overview/overview";
 import { ControllerEssGridOptimizedChargeOverviewComponent as GridOptimizedChargeChartOverviewComponent } from "./edge/history/Controller/Ess/GridoptimizedCharge/overview/overview";
+import { ControllerEssForecastChargeWindowOverviewComponent } from "./edge/history/Controller/Ess/ForecastChargeWindow/overview/overview";
 import { ControllerEssTimeOfUseTariffOverviewComponent } from "./edge/history/Controller/Ess/TimeOfUseTariff/overview/overview";
 import { ControllerHeatOverviewComponent } from "./edge/history/Controller/Heat/overview/overview";
 import { DetailsOverviewComponent as DigitalOutputDetailsOverviewComponent } from "./edge/history/Controller/Io/DigitalOutput/details/details.overview";
@@ -55,6 +56,7 @@ export const history: (/** Determines if titles in headers can be set */ customH
         { path: ":componentId/heatpumpchart", loadChildren: () => import("./edge/live/Controller/Io/Heatpump/controller-io-heatpump").then(m => m.ControllerIoHeatpumpModule) },
         { path: ":componentId/modbusTcpApi", component: ModbusTcpApiOverviewComponent },
         { path: ":componentId/scheduleChart", component: ControllerEssTimeOfUseTariffOverviewComponent },
+        { path: ":componentId/forecastchargewindowchart", component: ControllerEssForecastChargeWindowOverviewComponent },
         { path: ":componentId/symmetricpeakshavingchart", component: SymmetricPeakshavingChartOverviewComponent },
         { path: ":componentId/timeslotpeakshavingchart", component: TimeslotPeakshavingChartOverviewComponent },
         { path: "autarchychart", component: CommonAutarchyHistoryOverviewComponent },

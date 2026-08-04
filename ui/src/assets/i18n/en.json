@@ -536,6 +536,10 @@
                     "RPC_FAILED": "Command execution failed",
                     "OVERALL_SYSTEM": "Overall system"
                 },
+                "FORECAST_CHARGE_WINDOW": {
+                    "PRICE": "Grid-sell price",
+                    "NEGATIVE_PRICE_DURATION": "Negative price"
+                },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Activate charge from the grid",
                     "CHART_TITLE": "Planned Schedule",
