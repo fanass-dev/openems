@@ -127,6 +127,16 @@ gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
   negativ ist.
 * `CurrentlyBlocked` - `true`, wenn der Ziel-Controller aktuell tatsächlich
   auf `blockedMaxChargePower` steht (kombiniertes Ergebnis).
+* `NegativePriceDuration` - kumulierte Sekunden, in denen der
+  Börsen-Verkaufspreis negativ war (in Zeiten negativer Preise wird ja keine
+  Einspeisevergütung gezahlt). Anders als die übrigen Diagnose-Channels wird
+  dieser über `CalculateActiveTime` (Standard-OpenEMS-Utility, siehe z. B.
+  `Controller.Io.HeatingElement`) **historisiert**, sofern ein `Timedata`-
+  Provider (z. B. `Timedata.Rrd4j`) konfiguriert ist - abfragbar/darstellbar
+  in der History-Ansicht bzw. per `queryHistoricTimeseriesData`, z. B.
+  aggregiert als Stunden/Tag oder Stunden/Woche. Ohne konfigurierten
+  `Timedata`-Provider bleibt der Channel einfach `undefined` (fail-safe,
+  kein Fehler).
 
 == Bekannte Einschränkungen
 

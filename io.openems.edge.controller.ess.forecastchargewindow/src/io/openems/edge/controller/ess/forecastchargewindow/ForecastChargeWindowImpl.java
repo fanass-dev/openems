@@ -11,6 +11,9 @@ import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.ConfigurationPolicy;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.component.annotations.ReferenceCardinality;
+import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.component.annotations.ReferencePolicyOption;
 import org.osgi.service.metatype.annotations.Designate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +30,9 @@ import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.controller.api.Controller;
 import io.openems.edge.predictor.api.manager.PredictorManager;
+import io.openems.edge.timedata.api.Timedata;
+import io.openems.edge.timedata.api.TimedataProvider;
+import io.openems.edge.timedata.api.utils.CalculateActiveTime;
 import io.openems.edge.timeofusetariff.api.TariffManager;
 
 @Designate(ocd = Config.class, factory = true)
@@ -36,7 +42,7 @@ import io.openems.edge.timeofusetariff.api.TariffManager;
 		configurationPolicy = ConfigurationPolicy.REQUIRE //
 )
 public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
-		implements ForecastChargeWindow, Controller, OpenemsComponent {
+		implements ForecastChargeWindow, Controller, OpenemsComponent, TimedataProvider {
 
 	private static final LocalTime DEFAULT_AFTERNOON_WINDOW_START = LocalTime.of(12, 0);
 	private static final LocalTime DEFAULT_CHECK_TIME = LocalTime.of(8, 0);
@@ -51,6 +57,13 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 
 	@Reference
 	private TariffManager tariffManager;
+
+	@Reference(policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY, //
+			cardinality = ReferenceCardinality.OPTIONAL)
+	private volatile Timedata timedata = null;
+
+	private final CalculateActiveTime negativePriceDuration = new CalculateActiveTime(this,
+			ForecastChargeWindow.ChannelId.NEGATIVE_PRICE_DURATION);
 
 	private Config config;
 	private ChannelAddress productionChannelAddress;
@@ -122,9 +135,12 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			this.forecastCheckDoneToday = true;
 		}
 
-		var priceNegative = this.isPriceCurrentlyNegative(now);
+		var currentPrice = this.tariffManager.getGridSellDayAheadPrices().getAt(now);
+		var priceNegative = currentPrice != null && currentPrice < 0;
+		this._setCurrentGridSellPrice(currentPrice);
 		this._setPriceCurrentlyNegative(priceNegative);
 		this._setForecastLiftedToday(this.forecastLiftedToday);
+		this.negativePriceDuration.update(priceNegative);
 
 		this.applyState(this.forecastLiftedToday, priceNegative);
 		this._setLastDecision(this.buildStatusText(priceNegative));
@@ -205,19 +221,6 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Gets the grid-sell price for the current quarter-hour from
-	 * {@link TariffManager} and returns whether it is negative.
-	 *
-	 * @param now the current {@link ZonedDateTime}
-	 * @return true if a price is known and it is negative; false if it is
-	 *         positive/zero or no price is known (fail-safe)
-	 */
-	private boolean isPriceCurrentlyNegative(ZonedDateTime now) {
-		var price = this.tariffManager.getGridSellDayAheadPrices().getAt(now);
-		return price != null && price < 0;
-	}
-
-	/**
 	 * Computes the target block state from both triggers and, if it differs from
 	 * {@link #lastAppliedUnblocked}, writes it to the target Controller. Writing
 	 * only on change avoids reconfiguring (and thereby reactivating) the target
@@ -280,5 +283,10 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 					+ "] nicht auf " + watts + " W setzen, versuche es im naechsten Cycle erneut: " + e.getMessage());
 			return false;
 		}
+	}
+
+	@Override
+	public Timedata getTimedata() {
+		return this.timedata;
 	}
 }
