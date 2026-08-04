@@ -156,7 +156,9 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 			this._setCurrentL1(JsonUtils.getAsInt(nrg, 4) * 1000);
 			this._setCurrentL2(JsonUtils.getAsInt(nrg, 5) * 1000);
 			this._setCurrentL3(JsonUtils.getAsInt(nrg, 6) * 1000);
-			this._setActivePower(JsonUtils.getAsInt(nrg, 11) * 10);
+			// Unlike the legacy v1 API (where nrg[11] is in 0.1 kW steps), the v2 API
+			// used here already reports total power in Watt directly.
+			this._setActivePower(JsonUtils.getAsInt(nrg, 11));
 
 			JsonUtils.getAsOptionalString(json, "fwv").ifPresent(this::_setFirmwareVersion);
 
