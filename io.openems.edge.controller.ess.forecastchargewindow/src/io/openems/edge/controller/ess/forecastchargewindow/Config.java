@@ -1,19 +1,23 @@
 package io.openems.edge.controller.ess.forecastchargewindow;
 
 import org.osgi.service.metatype.annotations.AttributeDefinition;
+import org.osgi.service.metatype.annotations.AttributeType;
 import org.osgi.service.metatype.annotations.ObjectClassDefinition;
+
+import io.openems.common.types.EntsoeBiddingZone;
 
 @ObjectClassDefinition(//
 		name = "Controller Ess Forecast Charge Window", //
 		description = "Hebt den morgendlichen Ladeblock eines Controller.Symmetric.LimitActivePower fuer zwei "
 				+ "unabhaengige Gruende auf: (1) taeglich einmal geprueft, PV-Prognose ab einer konfigurierten "
 				+ "Uhrzeit (z. B. 12 Uhr) laesst nur noch wenig Ertrag erwarten - Aufhebung gilt dann fuer den "
-				+ "Rest des Tages; (2) fortlaufend (jeder Cycle) geprueft, aktueller Boersen-Verkaufspreis "
-				+ "(TariffManager/TariffGridSell, z. B. Tariff.Manual.EEG2025.GridSell) ist negativ - Aufhebung "
-				+ "gilt nur, solange der Preis negativ bleibt, und wird automatisch wieder zurueckgenommen, "
-				+ "sobald der Preis zurueck ins Positive dreht (ausser Grund 1 greift zu diesem Zeitpunkt "
-				+ "ebenfalls). Ohne belastbare Prognose bzw. ohne konfigurierten Preis-Provider passiert fuer "
-				+ "den jeweiligen Grund nichts, der Block bleibt in diesem Fall wie gewohnt aktiv (fail-safe).")
+				+ "Rest des Tages; (2) fortlaufend (jeder Cycle) geprueft, aktueller Day-Ahead-Boersenpreis "
+				+ "(direkt von der ENTSO-E Transparency Platform, unabhaengig von TariffManager/TariffGridSell) "
+				+ "ist negativ - Aufhebung gilt nur, solange der Preis negativ bleibt, und wird automatisch "
+				+ "wieder zurueckgenommen, sobald der Preis zurueck ins Positive dreht (ausser Grund 1 greift zu "
+				+ "diesem Zeitpunkt ebenfalls). Ohne belastbare Prognose bzw. ohne gueltige ENTSO-E-Zugangsdaten "
+				+ "passiert fuer den jeweiligen Grund nichts, der Block bleibt in diesem Fall wie gewohnt aktiv "
+				+ "(fail-safe).")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
@@ -65,6 +69,17 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 					+ "unter diesem Wert, gilt der Nachmittag als 'schlecht' und der Ladeblock wird fuer den "
 					+ "Rest des Tages aufgehoben. Muss an die eigene Anlagengroesse angepasst werden.")
 	int minRemainingProductionWh() default 5000;
+
+	@AttributeDefinition(name = "Bidding Zone", //
+			description = "ENTSO-E-Gebotszone, fuer die der Day-Ahead-Preis abgefragt wird.")
+	EntsoeBiddingZone biddingZone();
+
+	@AttributeDefinition(name = "Security Token", //
+			description = "Security-Token fuer die ENTSO-E Transparency Platform. Bei gleicher Bidding Zone und "
+					+ "gleichem Token wie z. B. bei einer bereits konfigurierten Tariff.Manual-Komponente wird "
+					+ "intern dieselbe, bereits laufende Abfrage wiederverwendet (kein doppelter API-Zugriff).", //
+			type = AttributeType.PASSWORD, required = false)
+	String securityToken() default "";
 
 	String webconsole_configurationFactory_nameHint() default "Controller Ess Forecast Charge Window [{id}]";
 }

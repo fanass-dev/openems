@@ -33,7 +33,9 @@ import io.openems.edge.predictor.api.manager.PredictorManager;
 import io.openems.edge.timedata.api.Timedata;
 import io.openems.edge.timedata.api.TimedataProvider;
 import io.openems.edge.timedata.api.utils.CalculateActiveTime;
-import io.openems.edge.timeofusetariff.api.TariffManager;
+import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeConfiguration;
+import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeMarketPriceProvider;
+import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeMarketPriceProviderPool;
 
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -56,11 +58,19 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	private PredictorManager predictorManager;
 
 	@Reference
-	private TariffManager tariffManager;
+	private EntsoeMarketPriceProviderPool marketPriceProviderPool;
 
 	@Reference(policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY, //
 			cardinality = ReferenceCardinality.OPTIONAL)
 	private volatile Timedata timedata = null;
+
+	/**
+	 * Obtained from {@link #marketPriceProviderPool} in {@link #activate}, using
+	 * the configured Bidding Zone/Security Token - pooled by that same
+	 * (Zone, Token) pair, so a Tariff.Manual component configured with the same
+	 * credentials shares the underlying ENTSO-E fetch instead of duplicating it.
+	 */
+	private EntsoeMarketPriceProvider marketPriceProvider;
 
 	private final CalculateActiveTime negativePriceDuration = new CalculateActiveTime(this,
 			ForecastChargeWindow.ChannelId.NEGATIVE_PRICE_DURATION);
@@ -97,11 +107,17 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		this.afternoonWindowStart = this.parseTimeOrFallback(config.afternoonWindowStart(),
 				DEFAULT_AFTERNOON_WINDOW_START, "Beginn Nachmittagsfenster");
 		this.checkTime = this.parseTimeOrFallback(config.checkTime(), DEFAULT_CHECK_TIME, "Prognose-Pruefzeit");
+		this.marketPriceProvider = this.marketPriceProviderPool
+				.get(new EntsoeConfiguration(config.biddingZone(), config.securityToken()));
 	}
 
 	@Override
 	@Deactivate
 	protected void deactivate() {
+		if (this.marketPriceProvider != null) {
+			this.marketPriceProviderPool.unget(this.marketPriceProvider);
+			this.marketPriceProvider = null;
+		}
 		super.deactivate();
 	}
 
@@ -135,7 +151,8 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			this.forecastCheckDoneToday = true;
 		}
 
-		var currentPrice = this.tariffManager.getGridSellDayAheadPrices().getAt(now);
+		var marketPriceData = this.marketPriceProvider.getMarketPrices().getValue();
+		var currentPrice = marketPriceData == null ? null : marketPriceData.getValues().getAt(now);
 		var priceNegative = currentPrice != null && currentPrice < 0;
 		this._setCurrentGridSellPrice(currentPrice);
 		this._setPriceCurrentlyNegative(priceNegative);

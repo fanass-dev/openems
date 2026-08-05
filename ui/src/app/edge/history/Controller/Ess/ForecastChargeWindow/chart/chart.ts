@@ -43,8 +43,9 @@ export class ChartComponent extends AbstractHistoryChart {
                 return [{
                     name: this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE"),
                     // fillChart() divides every channel value by 1000 (built for Watt -> kW),
-                    // which does not apply to a currency channel - undo it here.
-                    converter: () => data["GridSellPrice"]?.map(value => value == null ? null : value * 1000),
+                    // which does not apply to a currency channel - undo it (*1000), then convert
+                    // from the channel's EUR/MWh to the ct/kWh that YAxisType.CURRENCY assumes (/10).
+                    converter: () => data["GridSellPrice"]?.map(value => value == null ? null : value * 100),
                     color: "rgb(51,102,0)",
                     custom: {
                         type: "line",
