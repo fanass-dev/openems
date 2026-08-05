@@ -72,7 +72,7 @@ import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
 public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 		implements EvcsGoeGeminiManaged, ManagedEvcs, Evcs, OpenemsComponent, EventHandler, TimedataProvider {
 
-	private static final String STATUS_FILTER = "amp,car,err,nrg,alw,fwv";
+	private static final String STATUS_FILTER = "amp,car,err,nrg,alw,fwv,modelStatus,psm";
 
 	/** go-e API v2 'car' values that mean a vehicle is physically connected (Charging, WaitCar, Complete). */
 	private static final int GOE_CAR_STATE_CHARGING = 2;
@@ -155,6 +155,21 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 		if (EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE.equals(event.getTopic())) {
 			this.calculateEnergy.update(this.getActivePower().get());
 			this.calculateEnergySession.update(this.isVehicleConnected());
+			this.applyPhaseSwitchModeWrite();
+		}
+	}
+
+	/**
+	 * Applies a pending write to {@link EvcsGoeGeminiManaged.ChannelId#SET_PHASE_SWITCH_MODE},
+	 * if any. Fires once per user action (button click), not continuously - the
+	 * go-e device handles the required charge pause/wait time for the phase
+	 * change on its own (see readme.adoc), so no retry/backoff bookkeeping is
+	 * needed here beyond the existing {@code LastWriteFailed} channel.
+	 */
+	private void applyPhaseSwitchModeWrite() {
+		var write = this.getSetPhaseSwitchModeChannel().getNextWriteValueAndReset();
+		if (write.isPresent()) {
+			this.sendSetRequest("psm=" + write.get());
 		}
 	}
 
@@ -206,6 +221,9 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 			this._setActivePower(JsonUtils.getAsInt(nrg, 11));
 
 			JsonUtils.getAsOptionalString(json, "fwv").ifPresent(this::_setFirmwareVersion);
+
+			JsonUtils.getAsOptionalInt(json, "modelStatus").ifPresent(this::_setModelStatus);
+			JsonUtils.getAsOptionalInt(json, "psm").ifPresent(this::_setPhaseSwitchMode);
 
 			this._setChargingstationCommunicationFailed(false);
 		} catch (Exception e) {

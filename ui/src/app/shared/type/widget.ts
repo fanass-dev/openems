@@ -47,6 +47,7 @@ export enum WidgetFactory {
     "Controller.TimeslotPeakshaving",
     "Evcs.Cluster.PeakShaving",
     "Evcs.Cluster.SelfConsumption",
+    "Evcs.Goe.Gemini.Managed",
     "Weather.OpenMeteo",
     "Scheduler.JSCalendar",
 }
