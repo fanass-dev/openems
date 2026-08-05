@@ -30,7 +30,7 @@ export class ChartComponent extends AbstractHistoryChart {
     protected override getChartData(): HistoryUtils.ChartData {
         const componentId: string = this.config.getComponentIdsByFactory("Controller.Ess.ForecastChargeWindow")[0];
         this.component = this.config.components[componentId];
-        this.chartType = "line";
+        this.chartType = "bar";
 
         return {
             input: [
@@ -41,14 +41,14 @@ export class ChartComponent extends AbstractHistoryChart {
             ],
             output: (data: HistoryUtils.ChannelData) => {
                 return [{
-                    name: this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE"),
+                    name: this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE") + " (Ct/kWh)",
                     // fillChart() divides every channel value by 1000 (built for Watt -> kW),
                     // which does not apply to a currency channel - undo it (*1000), then convert
                     // from the channel's EUR/MWh to the ct/kWh that YAxisType.CURRENCY assumes (/10).
                     converter: () => data["GridSellPrice"]?.map(value => value == null ? null : value * 100),
                     color: "rgb(51,102,0)",
                     custom: {
-                        type: "line",
+                        type: "bar",
                         formatNumber: ChartConstants.NumberFormat.TWO,
                     },
                 }];

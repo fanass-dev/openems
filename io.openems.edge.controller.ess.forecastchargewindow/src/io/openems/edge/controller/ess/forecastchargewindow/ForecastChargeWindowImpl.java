@@ -23,12 +23,19 @@ import com.google.gson.JsonPrimitive;
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.common.jsonrpc.request.UpdateComponentConfigRequest.Property;
 import io.openems.common.jsonrpc.type.UpdateComponentConfig;
+import io.openems.common.session.Role;
 import io.openems.common.types.ChannelAddress;
 import io.openems.common.utils.DateUtils;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
 import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
+import io.openems.edge.common.jsonapi.ComponentJsonApi;
+import io.openems.edge.common.jsonapi.EdgeGuards;
+import io.openems.edge.common.jsonapi.JsonApiBuilder;
 import io.openems.edge.controller.api.Controller;
+import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGridSellPricesEndpoint;
+import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGridSellPricesEndpoint.Response;
+import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGridSellPricesEndpoint.Response.PricePoint;
 import io.openems.edge.predictor.api.manager.PredictorManager;
 import io.openems.edge.timedata.api.Timedata;
 import io.openems.edge.timedata.api.TimedataProvider;
@@ -44,7 +51,7 @@ import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeMarketPricePro
 		configurationPolicy = ConfigurationPolicy.REQUIRE //
 )
 public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
-		implements ForecastChargeWindow, Controller, OpenemsComponent, TimedataProvider {
+		implements ForecastChargeWindow, Controller, OpenemsComponent, TimedataProvider, ComponentJsonApi {
 
 	private static final LocalTime DEFAULT_AFTERNOON_WINDOW_START = LocalTime.of(12, 0);
 	private static final LocalTime DEFAULT_CHECK_TIME = LocalTime.of(8, 0);
@@ -305,5 +312,20 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	@Override
 	public Timedata getTimedata() {
 		return this.timedata;
+	}
+
+	@Override
+	public void buildJsonApiRoutes(JsonApiBuilder builder) {
+		builder.handleRequest(new GetDayAheadGridSellPricesEndpoint(), endpoint -> {
+			endpoint.setGuards(EdgeGuards.roleIsAtleast(Role.GUEST));
+		}, call -> {
+			var marketPriceData = this.marketPriceProvider.getMarketPrices().getValue();
+			var points = marketPriceData == null //
+					? List.<PricePoint>of() //
+					: marketPriceData.getValues().toMap().entrySet().stream() //
+							.map(e -> new PricePoint(e.getKey(), e.getValue())) //
+							.toList();
+			return new Response(points, "EUR/MWh");
+		});
 	}
 }
