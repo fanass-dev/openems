@@ -24,7 +24,7 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 		FORECAST_LIFTED_TODAY(Doc.of(OpenemsType.BOOLEAN) //
 				.text("true, wenn die heutige Prognose-Pruefung den Block fuer den Rest des Tages aufgehoben hat")), //
 		PRICE_CURRENTLY_NEGATIVE(Doc.of(OpenemsType.BOOLEAN) //
-				.text("true, wenn der aktuelle Boersen-Verkaufspreis (TariffManager) negativ ist")), //
+				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis (ENTSO-E) negativ ist")), //
 		CURRENTLY_BLOCKED(Doc.of(OpenemsType.BOOLEAN) //
 				.text("true, wenn der Ziel-Controller aktuell auf 'Ladeleistung waehrend Blockierung' steht")), //
 		NEGATIVE_PRICE_DURATION(Doc.of(OpenemsType.LONG) //
@@ -35,7 +35,7 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 		CURRENT_GRID_SELL_PRICE(Doc.of(OpenemsType.DOUBLE) //
 				.unit(Unit.MONEY_PER_MEGAWATT_HOUR) //
 				.persistencePriority(PersistencePriority.HIGH) //
-				.text("Aktueller Boersen-Verkaufspreis (TariffManager) fuer die laufende Viertelstunde - "
+				.text("Aktueller Day-Ahead-Boersenpreis (ENTSO-E) fuer die laufende Viertelstunde - "
 						+ "historisiert, um den Preisverlauf in der History-Ansicht darstellen zu koennen"));
 
 		private final Doc doc;
