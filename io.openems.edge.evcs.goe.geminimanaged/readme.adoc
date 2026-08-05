@@ -95,6 +95,35 @@ Schreiben: `amp=<A>` (Ladestrom) zusammen mit `frc=2` (force On) beim Laden;
 entscheidet) wird von diesem Bundle nie gesetzt - sobald diese Komponente
 aktiv ist, hat sie immer eine explizite Meinung (An oder Aus), nie "neutral".
 
+== Kumulierte Energie und `EnergySession`
+
+Die go-e API v2 liefert nur Momentanleistung (`nrg[11]`), keinen kumulierten
+Energiezähler. Kumulierte Energie (`ElectricityMeter.ActiveProductionEnergy`
+- das ist hier korrekt, nicht `ActiveConsumptionEnergy`, siehe unten) und
+`EnergySession` (Energie seit Beginn der aktuellen Ladesitzung, in der
+Live-Kachel/History als "Verbraucht"/"Energie seit Ladebeginn" sichtbar)
+werden daher aus der Leistung integriert, genau wie im mitgelieferten
+Nur-Lese-Bundle `Evcs.Goe.Http`:
+
+* `CalculateEnergyFromPower` (Standard-OpenEMS-Utility) integriert
+  `ActivePower` fortlaufend zu `ActiveProductionEnergy` auf, mit
+  Timedata-gestütztem Warmstart (setzt beim Aktivieren mit dem letzten
+  historisierten Wert fort, statt bei 0 neu anzufangen).
+* `CalculateEnergySession` bildet daraus `EnergySession` = aktueller
+  `ActiveProductionEnergy`-Wert minus dessen Wert beim letzten Wechsel
+  "kein Fahrzeug verbunden" -> "Fahrzeug verbunden" (`car` wechselt von 1
+  auf 2/3/4) - true "Energie seit Ladebeginn" der laufenden Sitzung.
+* `ActiveProductionEnergy` (nicht `ActiveConsumptionEnergy`) ist hier
+  richtig: beide Utilities integrieren/vergleichen konsistent das, was
+  dieser Meter selbst als (immer positive) `ActivePower` meldet - identisch
+  zum Vorgehen im Original-Bundle `Evcs.Goe.Http`. Wie diese Werte auf
+  Systemebene (`_sum`) als Verbrauch verrechnet werden, ist unabhängig davon
+  und Sache des Sum-Components, nicht dieses Bundles.
+* Beide Berechnungen laufen im `TOPIC_CYCLE_AFTER_PROCESS_IMAGE`-Event, mit
+  eigenem, dynamischem (optionalem) `Timedata`-Reference - ohne konfigurierten
+  `Timedata`-Provider (z. B. `Timedata.Rrd4j`) bleiben die Werte einfach bei
+  0/undefined (fail-safe, kein Fehler).
+
 == Voraussetzungen
 
 * go-e Gemini mit aktueller Firmware (API v2, `/api/status`/`/api/set`
