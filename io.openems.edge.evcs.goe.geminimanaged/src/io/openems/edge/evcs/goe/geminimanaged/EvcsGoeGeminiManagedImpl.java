@@ -14,6 +14,9 @@ import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.ConfigurationPolicy;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.component.annotations.ReferenceCardinality;
+import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.component.annotations.ReferencePolicyOption;
 import org.osgi.service.event.Event;
 import org.osgi.service.event.EventHandler;
 import org.osgi.service.event.propertytypes.EventTopics;
@@ -30,9 +33,11 @@ import io.openems.common.types.MeterType;
 import io.openems.common.utils.JsonUtils;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleService;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleServiceDefinition;
+import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.event.EdgeEventConstants;
 import io.openems.edge.evcs.api.AbstractManagedEvcsComponent;
+import io.openems.edge.evcs.api.CalculateEnergySession;
 import io.openems.edge.evcs.api.ChargingType;
 import io.openems.edge.evcs.api.Evcs;
 import io.openems.edge.evcs.api.EvcsPower;
@@ -42,6 +47,9 @@ import io.openems.edge.evcs.api.Phases;
 import io.openems.edge.evcs.api.Status;
 import io.openems.edge.meter.api.ElectricityMeter;
 import io.openems.edge.meter.api.PhaseRotation;
+import io.openems.edge.timedata.api.Timedata;
+import io.openems.edge.timedata.api.TimedataProvider;
+import io.openems.edge.timedata.api.utils.CalculateEnergyFromPower;
 
 /**
  * Managed EVCS implementation for go-e Gemini charge points, using the
@@ -62,9 +70,14 @@ import io.openems.edge.meter.api.PhaseRotation;
 		EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE //
 })
 public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
-		implements EvcsGoeGeminiManaged, ManagedEvcs, Evcs, OpenemsComponent, EventHandler {
+		implements EvcsGoeGeminiManaged, ManagedEvcs, Evcs, OpenemsComponent, EventHandler, TimedataProvider {
 
 	private static final String STATUS_FILTER = "amp,car,err,nrg,alw,fwv";
+
+	/** go-e API v2 'car' values that mean a vehicle is physically connected (Charging, WaitCar, Complete). */
+	private static final int GOE_CAR_STATE_CHARGING = 2;
+	private static final int GOE_CAR_STATE_WAIT_CAR = 3;
+	private static final int GOE_CAR_STATE_COMPLETE = 4;
 
 	private final Logger log = LoggerFactory.getLogger(EvcsGoeGeminiManagedImpl.class);
 
@@ -77,6 +90,20 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 	private HttpBridgeCycleServiceDefinition httpBridgeCycleServiceDefinition;
 	private BridgeHttp httpBridge;
 	private HttpBridgeCycleService cycleService;
+
+	@Reference(policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY, cardinality = ReferenceCardinality.OPTIONAL)
+	private volatile Timedata timedata = null;
+
+	/**
+	 * Cumulated energy since Component activation, integrated from ActivePower -
+	 * ACTIVE_PRODUCTION_ENERGY is correct here (not ACTIVE_CONSUMPTION_ENERGY),
+	 * matching the upstream Evcs.Goe.Http bundle: it is the integral of this
+	 * meter's own (always positive) ActivePower, independent of how the
+	 * household-level Sum later classifies a consumption-type meter's energy.
+	 */
+	private final CalculateEnergyFromPower calculateEnergy = new CalculateEnergyFromPower(this,
+			ElectricityMeter.ChannelId.ACTIVE_PRODUCTION_ENERGY);
+	private final CalculateEnergySession calculateEnergySession = new CalculateEnergySession(this);
 
 	protected Config config;
 
@@ -125,6 +152,24 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 			return;
 		}
 		super.handleEvent(event);
+		if (EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE.equals(event.getTopic())) {
+			this.calculateEnergy.update(this.getActivePower().get());
+			this.calculateEnergySession.update(this.isVehicleConnected());
+		}
+	}
+
+	/**
+	 * Whether a vehicle is currently physically connected, independent of
+	 * whether it is actively charging (used to detect the start of a new
+	 * charging session for {@link #calculateEnergySession}).
+	 *
+	 * @return true if a vehicle is connected
+	 */
+	private boolean isVehicleConnected() {
+		int carState = this.<IntegerReadChannel>channel(EvcsGoeGeminiManaged.ChannelId.GOE_CAR_STATE).value()
+				.orElse(-1);
+		return carState == GOE_CAR_STATE_CHARGING || carState == GOE_CAR_STATE_WAIT_CAR
+				|| carState == GOE_CAR_STATE_COMPLETE;
 	}
 
 	private String statusUrl() {
@@ -290,5 +335,10 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 		if (this.config.debugMode()) {
 			this.logInfo(this.log, message);
 		}
+	}
+
+	@Override
+	public Timedata getTimedata() {
+		return this.timedata;
 	}
 }
