@@ -90,6 +90,10 @@
                   <oe-multiple-evcs-api-cluster [componentId]="widget.componentId"></oe-multiple-evcs-api-cluster>
                 </ion-col>
 
+                <ion-col *ngSwitchCase="'Evcs.Goe.Gemini.Managed'" size="12" size-lg="6" class="ion-no-padding">
+                  <Evcs_Goe_Gemini_Managed [componentId]="widget.componentId"></Evcs_Goe_Gemini_Managed>
+                </ion-col>
+
                 <ion-col *ngSwitchCase="'Evcs.Cluster.PeakShaving'" size="12" size-lg="6" class="ion-no-padding">
                   <oe-multiple-evcs-api-cluster [componentId]="widget.componentId"></oe-multiple-evcs-api-cluster>
                 </ion-col>

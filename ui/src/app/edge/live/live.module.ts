@@ -24,6 +24,7 @@ import { Controller_Ess_GridOptimizedCharge } from "./Controller/Ess/GridOptimiz
 import { Controller_Ess_TimeOfUseTariff } from "./Controller/Ess/TimeOfUseTariff/Ess_TimeOfUseTariff";
 import { AdministrationComponent } from "./Controller/Evcs/administration/administration.component";
 import { Controller_Evcs } from "./Controller/Evcs/Evcs";
+import { Controller_Evcs_Goe_Gemini_Managed } from "./Controller/Evcs/GoeGeminiManaged/Evcs_Goe_Gemini_Managed";
 import { ControllerEvseSingle } from "./Controller/Evse/EvseSingle.module";
 import { ControllerHeat } from "./Controller/Heat/HeatMyPv";
 import { Controller_Io_ChannelSingleThresholdComponent } from "./Controller/Io/ChannelSingleThreshold/flat/flat";
@@ -69,6 +70,7 @@ import { SystemOutageInfoComponent } from "./system-outage-info/oe-system-outage
         Controller_Ess_GridOptimizedCharge,
         Controller_Ess_TimeOfUseTariff,
         Controller_Evcs,
+        Controller_Evcs_Goe_Gemini_Managed,
         ControllerEvseSingle,
         ControllerHeat,
         Controller_Io_HeatingElement,
