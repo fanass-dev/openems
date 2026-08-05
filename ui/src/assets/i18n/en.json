@@ -537,8 +537,12 @@
                     "OVERALL_SYSTEM": "Overall system"
                 },
                 "FORECAST_CHARGE_WINDOW": {
-                    "PRICE": "Grid-sell price",
-                    "NEGATIVE_PRICE_DURATION": "Negative price"
+                    "PRICE": "Exchange price",
+                    "NEGATIVE_PRICE_DURATION": "Negative price",
+                    "LAST_DECISION": "Last decision",
+                    "CHART_TITLE": "Day-ahead price today",
+                    "BLOCKED": "Block active",
+                    "UNBLOCKED": "Block lifted"
                 },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Activate charge from the grid",

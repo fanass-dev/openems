@@ -157,6 +157,38 @@ späteres erneutes Anzeigen ist im Portal nicht möglich (nur Neu-Generieren,
 was das alte Token ungültig macht). Token also beim Erzeugen sofort sicher
 notieren.
 
+== Live-Ansicht: Day-Ahead-Preis inkl. heute noch bevorstehender Stunden
+
+Die History-Seite (Kachel + Chart, siehe UI-Struktur unten) kann grundsätzlich
+nur bereits vergangene, historisierte Werte zeigen (`queryHistoricTimeseriesData`
+fragt Rrd4j ab, das nur Vergangenheit kennt) - selbst wenn der Rest des
+heutigen Tages im Day-Ahead-Preis schon bekannt ist, taucht er dort nie auf.
+
+Für "Vergangenheit + bereits bekannte Zukunft in einem Chart" gibt es daher
+zusätzlich eine **Live-Ansicht**-Kachel mit Modal (analog zu
+`Controller.Ess.Time-Of-Use-Tariff`s "Aktueller Fahrplan"-Chart,
+`powerSocChart.ts`). Anders als beim Vorbild wird dafür aber **nicht** an
+`EnergyScheduleHandler`/`EnergyScheduler` angedockt - dieser Mechanismus ist
+eng an das zentrale LP-/genetischer-Algorithmus-Optimierungsframework
+gekoppelt (`simulate()`, `Fitness`, `applySchedule()` etc.), gedacht für
+Controller, die einen eigenen Ladeplan berechnen lassen. Hier gibt es aber
+nichts zu optimieren, nur eine bereits bekannte Preiskurve anzuzeigen - das
+wäre ein unpassend schwerer Hammer gewesen.
+
+Stattdessen implementiert `ForecastChargeWindowImpl` direkt `ComponentJsonApi`
+und registriert eine eigene, schlanke JSON-RPC-Route
+(`getDayAheadGridSellPrices`, siehe `jsonrpc/GetDayAheadGridSellPricesEndpoint.java`),
+die einfach den aktuell im Speicher gehaltenen ENTSO-E-Preisverlauf
+(`EntsoeMarketPriceProvider.getMarketPrices().getValue()`) unverändert als
+Liste von `(Zeitpunkt, Preis in EUR/MWh)`-Punkten zurückgibt - keine
+Optimierung, keine Persistierung, nur ein dünner Wrapper um Daten, die
+ohnehin schon im Speicher liegen. Die Live-Ansicht-Komponente
+(`ui/.../edge/live/Controller/Ess/ForecastChargeWindow/modal/priceChart.ts`)
+ruft diese Route beim Öffnen des Modals per `ComponentJsonApiRequest` ab und
+zeichnet die bereits vergangenen Viertelstunden als durchgezogene, die noch
+bevorstehenden als gestrichelte Linie - derselbe visuelle Trick wie bei
+`powerSocChart.ts`.
+
 == Diagnose-Channels
 
 * `LastDecision` - Klartext der zuletzt getroffenen Entscheidung.

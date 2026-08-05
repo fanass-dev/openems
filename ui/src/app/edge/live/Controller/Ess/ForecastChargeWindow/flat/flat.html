@@ -1,0 +1,8 @@
+@if (isInitialized) {
+  <oe-flat-widget button [title]="component.alias" [icon]="{name:
+    'oe-time-of-use', color: 'normal'}" [modalComponent]="modalComponent">
+    <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE' | translate"
+      [value]="priceWithCurrency"></oe-flat-widget-line>
+    <oe-flat-widget-line [name]="'GENERAL.STATUS' | translate" [value]="blockStatus"></oe-flat-widget-line>
+  </oe-flat-widget>
+}
