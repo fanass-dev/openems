@@ -58,8 +58,8 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 
 	@AttributeDefinition(name = "Batterie Leistung L1 Key", //
 			description = "EOS-Measurement-Key fuer die Batterieleistung Phase L1 [W] - negativ = Laden, "
-					+ "positiv = Entladen laut OpenEMS-Konvention; ob EOS dieselbe Vorzeichen-Konvention "
-					+ "erwartet, ist unverifiziert (siehe readme.adoc). Quelle: _sum/EssActivePowerL1.")
+					+ "positiv = Entladen (OpenEMS-Konvention, empirisch als mit EOS uebereinstimmend "
+					+ "verifiziert, siehe readme.adoc). Quelle: _sum/EssActivePowerL1.")
 	String batteryPowerL1Key() default "byd_hvm_16.6-power-l1-w";
 
 	@AttributeDefinition(name = "Batterie Leistung L2 Key", //
