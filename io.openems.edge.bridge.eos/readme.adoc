@@ -1,0 +1,45 @@
+= Bridge EOS
+
+Nicht Teil des offiziellen OpenEMS-Projekts (custom Bundle dieser Installation).
+
+== Zweck
+
+Generische, bewusst "dumme" HTTP-Bridge zu einem
+https://github.com/Akkudoktor-EOS/EOS[Akkudoktor-EOS]-REST-Server. Kennt nur
+die Basis-URL und den rohen `PUT /v1/measurement/value`-Aufruf - **nicht**,
+welche OpenEMS-Kanaele auf welche EOS-Measurement-Keys abgebildet werden.
+Diese "Intelligenz" sitzt bewusst in einer separaten Komponente
+(`Controller.Api.Eos.Measurement`), die diese Bridge referenziert - analog
+zum Verhaeltnis `BridgeModbus` <-> einzelne Geraete-Bundles, oder
+`EntsoeMarketPriceProviderPool` <-> `Tariff.Manual.EEG2025.GridSell`/
+`ForecastChargeWindow` in diesem Repository.
+
+Mehrere Komponenten koennen dieselbe `Bridge.Eos`-Instanz referenzieren
+(ueber deren Component-ID), z. B. spaeter eine weitere Komponente, die
+EOS-Optimierungsergebnisse zurueck nach OpenEMS liest - ohne eine zweite
+HTTP-Verbindung/Konfiguration aufzubauen.
+
+== EOS-API-Endpoint
+
+`PUT /v1/measurement/value?datetime=<ISO8601>&key=<string>&value=<float>` -
+alle drei Parameter als Query-Parameter, kein Request-Body (siehe
+`src/akkudoktoreos/server/eos.py` im EOS-Repository,
+`fastapi_measurement_value_put`). Antwort wird nicht ausgewertet, nur
+Erfolg/Fehlschlag (Channel `LastRequestFailed`).
+
+== Kein Fehler-Retry/Backoff
+
+Anders als bei den Fronius-/go-e-Bundles (inoffizielle, launenhafte APIs) ist
+die EOS-REST-API offiziell dokumentiert und lokal gehostet - ein
+fehlgeschlagener Push wird nur geloggt (`LastRequestFailed`), es gibt keine
+Wiederholungslogik in dieser Bridge. Der naechste periodische Push (durch die
+aufrufende Komponente) ueberschreibt den Wert ohnehin mit dem dann aktuellen
+Stand.
+
+== Voraussetzungen
+
+* Ein laufender EOS-REST-Server, erreichbar unter der konfigurierten
+  `baseUrl` (Standard-Port typischerweise 8503).
+* Kein Authentifizierungsmechanismus in der EOS-API gefunden (Stand der
+  Analyse) - falls eine EOS-Version das nachruestet, muesste diese Bridge
+  entsprechend erweitert werden.

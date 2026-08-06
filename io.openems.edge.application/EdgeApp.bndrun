@@ -51,6 +51,7 @@
 	bnd.identity;id='io.openems.edge.batteryinverter.refu88k',\
 	bnd.identity;id='io.openems.edge.batteryinverter.sinexcel',\
 	bnd.identity;id='io.openems.edge.bosch.bpts5hybrid',\
+	bnd.identity;id='io.openems.edge.bridge.eos',\
 	bnd.identity;id='io.openems.edge.bridge.http',\
 	bnd.identity;id='io.openems.edge.bridge.mbus',\
 	bnd.identity;id='io.openems.edge.bridge.modbus',\
@@ -59,6 +60,7 @@
 	bnd.identity;id='io.openems.edge.common',\
 	bnd.identity;id='io.openems.edge.controller.api.backend',\
 	bnd.identity;id='io.openems.edge.controller.api.common',\
+	bnd.identity;id='io.openems.edge.controller.api.eos',\
 	bnd.identity;id='io.openems.edge.controller.api.modbus',\
 	bnd.identity;id='io.openems.edge.controller.api.mqtt',\
 	bnd.identity;id='io.openems.edge.controller.api.rest',\
@@ -505,5 +507,7 @@
 	io.openems.edge.pvinverter.fronius.json;version=snapshot,\
 	io.openems.edge.pvinverter.hoymiles.opendtu;version=snapshot,\
 	io.openems.edge.controller.ess.forecastchargewindow;version=snapshot,\
-	io.openems.edge.evcs.goe.geminimanaged;version=snapshot
+	io.openems.edge.evcs.goe.geminimanaged;version=snapshot,\
+	io.openems.edge.bridge.eos;version=snapshot,\
+	io.openems.edge.controller.api.eos;version=snapshot
 -resolve: manual
