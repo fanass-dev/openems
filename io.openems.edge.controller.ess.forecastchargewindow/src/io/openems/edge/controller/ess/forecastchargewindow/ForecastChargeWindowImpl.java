@@ -1,5 +1,10 @@
 package io.openems.edge.controller.ess.forecastchargewindow;
 
+import static io.openems.common.utils.IntUtils.fitWithin;
+import static io.openems.edge.common.type.Phase.SingleOrAllPhase.ALL;
+import static io.openems.edge.ess.power.api.Pwr.ACTIVE;
+import static io.openems.edge.ess.power.api.Relationship.GREATER_OR_EQUALS;
+
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZonedDateTime;
@@ -18,11 +23,8 @@ import org.osgi.service.metatype.annotations.Designate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.gson.JsonPrimitive;
-
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
-import io.openems.common.jsonrpc.request.UpdateComponentConfigRequest.Property;
-import io.openems.common.jsonrpc.type.UpdateComponentConfig;
+import io.openems.common.jscalendar.JSCalendar;
 import io.openems.common.session.Role;
 import io.openems.common.types.ChannelAddress;
 import io.openems.common.utils.DateUtils;
@@ -36,6 +38,7 @@ import io.openems.edge.controller.api.Controller;
 import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGridSellPricesEndpoint;
 import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGridSellPricesEndpoint.Response;
 import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGridSellPricesEndpoint.Response.PricePoint;
+import io.openems.edge.ess.api.ManagedSymmetricEss;
 import io.openems.edge.predictor.api.manager.PredictorManager;
 import io.openems.edge.timedata.api.Timedata;
 import io.openems.edge.timedata.api.TimedataProvider;
@@ -55,6 +58,7 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 
 	private static final LocalTime DEFAULT_AFTERNOON_WINDOW_START = LocalTime.of(12, 0);
 	private static final LocalTime DEFAULT_CHECK_TIME = LocalTime.of(8, 0);
+	private static final String CONSTRAINT_ID = "ForecastChargeWindow";
 
 	private final Logger log = LoggerFactory.getLogger(ForecastChargeWindowImpl.class);
 
@@ -87,16 +91,24 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	private LocalTime afternoonWindowStart;
 	private LocalTime checkTime;
 
+	/**
+	 * Parsed from {@link Config#jsCalendar()} - determines the time window(s)
+	 * during which charging is blocked by default (subject to being lifted by
+	 * forecast or price, see {@link #run()}). Reuses the exact same JSCalendar
+	 * engine as {@code Scheduler.JSCalendar}, just evaluated locally here
+	 * instead of externally controlling a second Controller.
+	 */
+	private JSCalendar.Tasks<Void> blockWindow = JSCalendar.Tasks.empty();
+
 	private LocalDate lastProcessedDate = null;
 	private boolean forecastCheckDoneToday = false;
 	private boolean forecastLiftedToday = false;
 
 	/**
-	 * The block state last successfully written to the target Controller - null
-	 * until the first successful write, so an Edge restart always re-applies the
-	 * currently correct state instead of assuming it is already in place.
+	 * Last logged overall result - used only to avoid logging the same line
+	 * every Cycle, see {@link #logOnChange}.
 	 */
-	private Boolean lastAppliedUnblocked = null;
+	private Boolean lastLoggedUnblocked = null;
 
 	public ForecastChargeWindowImpl() {
 		super(//
@@ -116,6 +128,7 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		this.checkTime = this.parseTimeOrFallback(config.checkTime(), DEFAULT_CHECK_TIME, "Prognose-Pruefzeit");
 		this.marketPriceProvider = this.marketPriceProviderPool
 				.get(new EntsoeConfiguration(config.biddingZone(), config.securityToken()));
+		this.blockWindow = JSCalendar.Tasks.fromStringOrEmpty(this.componentManager.getClock(), config.jsCalendar());
 	}
 
 	@Override
@@ -166,32 +179,47 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		this._setForecastLiftedToday(this.forecastLiftedToday);
 		this.negativePriceDuration.update(priceNegative);
 
-		this.applyState(this.forecastLiftedToday, priceNegative);
-		this._setLastDecision(this.buildStatusText(priceNegative));
+		// Outside the configured time window, there is never a default block -
+		// only within it can the forecast/price triggers even matter.
+		var withinTimeWindow = this.blockWindow.getActiveOneTask() != null;
+		this._setWithinTimeWindow(withinTimeWindow);
+
+		var shouldBeUnblocked = !withinTimeWindow || this.forecastLiftedToday || priceNegative;
+		this._setCurrentlyBlocked(!shouldBeUnblocked);
+		this.logOnChange(withinTimeWindow, this.forecastLiftedToday, priceNegative, shouldBeUnblocked);
+		this.applyEssConstraint(shouldBeUnblocked);
+
+		this._setLastDecision(this.buildStatusText(withinTimeWindow, priceNegative, shouldBeUnblocked));
 	}
 
 	/**
 	 * Builds a full, current status text distinguishing "no forecast data" from
-	 * "forecast data available, does not justify lifting" - unlike
-	 * {@link #applyState}, which only writes a message when the applied Config
-	 * value actually changes, this is (re-)written every Cycle so the Channel
-	 * always reflects the current situation, not just the last transition.
+	 * "forecast data available, does not justify lifting" - refreshed every
+	 * Cycle so the Channel always reflects the current situation, not just the
+	 * last transition.
 	 *
-	 * @param priceNegative whether the current grid-sell price is negative
+	 * @param withinTimeWindow whether 'now' is within a configured block window
+	 * @param priceNegative    whether the current grid-sell price is negative
+	 * @param shouldBeUnblocked the overall result
 	 * @return the status text
 	 */
-	private String buildStatusText(boolean priceNegative) {
+	private String buildStatusText(boolean withinTimeWindow, boolean priceNegative, boolean shouldBeUnblocked) {
+		var windowText = withinTimeWindow //
+				? "Zeitfenster: aktiv" //
+				: "Zeitfenster: nicht aktiv -> hebt Block auf";
+
 		String forecastText;
 		if (!this.forecastCheckDoneToday) {
 			forecastText = "Prognose: heute noch nicht geprueft (vor " + this.config.checkTime() + ")";
 		} else {
 			var forecastedWh = this.getForecastedAfternoonProductionChannel().value().get();
 			if (forecastedWh == null) {
-				forecastText = "Prognose: keine Daten verfuegbar (" + this.productionChannelAddress + ")";
+				forecastText = "Prognose: keine Daten verfuegbar (" + this.productionChannelAddress
+						+ ") -> hebt Block auf (fail-open)";
 			} else {
 				forecastText = "Prognose: " + forecastedWh + " Wh ab " + this.config.afternoonWindowStart()
 						+ " (Schwelle " + this.config.minRemainingProductionWh() + " Wh)"
-						+ (this.forecastLiftedToday ? " -> hebt Block auf" : " -> reicht aus, Block bleibt aktiv");
+						+ (this.forecastLiftedToday ? " -> hebt Block auf" : " -> reicht aus");
 			}
 		}
 
@@ -199,16 +227,18 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 				? "Preis: aktuell negativ -> hebt Block auf" //
 				: "Preis: aktuell nicht negativ";
 
-		var result = (this.forecastLiftedToday || priceNegative) ? "Ergebnis: Block aufgehoben" : "Ergebnis: Block aktiv";
+		var result = shouldBeUnblocked ? "Ergebnis: Block aufgehoben" : "Ergebnis: Block aktiv";
 
-		return forecastText + "; " + priceText + "; " + result;
+		return windowText + "; " + forecastText + "; " + priceText + "; " + result;
 	}
 
 	/**
 	 * Sums the production forecast from {@link #afternoonWindowStart} until the
 	 * end of the current day and, if it falls below the configured threshold,
 	 * sets {@link #forecastLiftedToday} - which then lifts the block for the
-	 * remainder of the day (see {@link #applyState}).
+	 * remainder of the day. Also lifts (fail-open) if no forecast is available
+	 * at all - e.g. because of a lost internet connection - since a missing
+	 * data source must not be able to withhold charging indefinitely.
 	 *
 	 * @param now the current {@link ZonedDateTime}
 	 */
@@ -219,15 +249,18 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		var prediction = this.predictorManager.getPrediction(this.productionChannelAddress);
 		if (prediction.isEmpty()) {
 			this._setForecastedAfternoonProduction(null);
-			this.logInfo(this.log,
-					"Keine Prognose verfuegbar (" + this.productionChannelAddress + ") - Block bleibt aktiv");
+			this.forecastLiftedToday = true;
+			this.logInfo(this.log, "Keine Prognose verfuegbar (" + this.productionChannelAddress
+					+ ") - Ladeblock fuer heute aufgehoben (fail-open)");
 			return;
 		}
 
 		var values = prediction.getBetweenExclusive(afternoonStart, tomorrowMidnight).toList();
 		if (values.isEmpty()) {
 			this._setForecastedAfternoonProduction(null);
-			this.logInfo(this.log, "Prognose vorhanden, aber keine Werte im Nachmittagsfenster - Block bleibt aktiv");
+			this.forecastLiftedToday = true;
+			this.logInfo(this.log, "Prognose vorhanden, aber keine Werte im Nachmittagsfenster - Ladeblock fuer "
+					+ "heute aufgehoben (fail-open)");
 			return;
 		}
 
@@ -245,33 +278,33 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Computes the target block state from both triggers and, if it differs from
-	 * {@link #lastAppliedUnblocked}, writes it to the target Controller. Writing
-	 * only on change avoids reconfiguring (and thereby reactivating) the target
-	 * Controller every Cycle.
+	 * Logs a human-readable line only when the overall result actually changes -
+	 * {@link #applyEssConstraint(boolean)} itself must run every Cycle
+	 * unconditionally (it is a live Power-Constraint, not a Config write), but
+	 * logging every Cycle would spam the log.
 	 *
-	 * @param forecastLifted whether today's forecast check lifted the block
-	 * @param priceNegative  whether the current grid-sell price is negative
+	 * @param withinTimeWindow  whether 'now' is within a configured block window
+	 * @param forecastLifted    whether today's forecast check lifted the block
+	 * @param priceNegative     whether the current grid-sell price is negative
+	 * @param shouldBeUnblocked the overall result
 	 */
-	private void applyState(boolean forecastLifted, boolean priceNegative) {
-		var shouldBeUnblocked = forecastLifted || priceNegative;
-		if (Boolean.valueOf(shouldBeUnblocked).equals(this.lastAppliedUnblocked)) {
+	private void logOnChange(boolean withinTimeWindow, boolean forecastLifted, boolean priceNegative,
+			boolean shouldBeUnblocked) {
+		if (Boolean.valueOf(shouldBeUnblocked).equals(this.lastLoggedUnblocked)) {
 			return;
 		}
-
-		var reason = shouldBeUnblocked //
-				? "Block aufgehoben (Grund: " + describeReason(forecastLifted, priceNegative) + ")" //
-				: "Block aktiviert (weder Prognose noch negativer Boersenpreis rechtfertigen aktuell eine Aufhebung)";
-		var watts = shouldBeUnblocked ? this.config.unblockedMaxChargePower() : this.config.blockedMaxChargePower();
-
-		if (this.applyMaxChargePower(watts, reason)) {
-			this.lastAppliedUnblocked = shouldBeUnblocked;
-			this._setCurrentlyBlocked(!shouldBeUnblocked);
-		}
+		this.lastLoggedUnblocked = shouldBeUnblocked;
+		this.logInfo(this.log, shouldBeUnblocked //
+				? "Block aufgehoben (Grund: " + describeReason(withinTimeWindow, forecastLifted, priceNegative)
+						+ ")" //
+				: "Block aktiviert (Zeitfenster aktiv, weder Prognose noch negativer Boersenpreis rechtfertigen "
+						+ "aktuell eine Aufhebung)");
 	}
 
-	private static String describeReason(boolean forecastLifted, boolean priceNegative) {
-		if (forecastLifted && priceNegative) {
+	private static String describeReason(boolean withinTimeWindow, boolean forecastLifted, boolean priceNegative) {
+		if (!withinTimeWindow) {
+			return "ausserhalb des konfigurierten Zeitfensters";
+		} else if (forecastLifted && priceNegative) {
 			return "PV-Prognose und negativer Boersenpreis";
 		} else if (forecastLifted) {
 			return "PV-Prognose";
@@ -281,31 +314,28 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	}
 
 	/**
-	 * Writes the given value as 'maxChargePower' Config property of
-	 * {@link Config#targetControllerId()}, triggering its normal
-	 * deactivate/activate reconfiguration cycle. The human-readable reason is
-	 * only logged to the Edge log (audit trail of actual changes) -
-	 * {@link ForecastChargeWindow.ChannelId#LAST_DECISION} is refreshed
-	 * separately every Cycle by {@link #buildStatusText}, independent of
-	 * whether a change was actually applied this Cycle.
+	 * Sets the Max-Charge-Power limit directly as a Power-Constraint on
+	 * {@link Config#ess_id()} - every Cycle, unconditionally, like any other
+	 * live-constraint Controller (e.g. Controller.Symmetric.LimitActivePower,
+	 * whose pattern this mirrors). No second Controller is written to/steered
+	 * by this one.
 	 *
-	 * @param watts  the value to write [W]
-	 * @param reason human-readable reason, logged on success
-	 * @return true on success; false on failure (caller retries on the next
-	 *         Cycle, since {@link #lastAppliedUnblocked} is only updated on
-	 *         success)
+	 * @param unblocked whether charging should currently be unblocked
+	 * @throws OpenemsNamedException on error, e.g. if {@link Config#ess_id()}
+	 *                                does not resolve to a Component
 	 */
-	private boolean applyMaxChargePower(int watts, String reason) {
-		try {
-			this.componentManager.handleUpdateComponentConfigRequest(null,
-					new UpdateComponentConfig.Request(this.config.targetControllerId(),
-							List.of(new Property("maxChargePower", new JsonPrimitive(watts)))));
-			this.logInfo(this.log, reason);
-			return true;
-		} catch (OpenemsNamedException e) {
-			this.logWarn(this.log, "Konnte 'Max. Ladeleistung' von [" + this.config.targetControllerId()
-					+ "] nicht auf " + watts + " W setzen, versuche es im naechsten Cycle erneut: " + e.getMessage());
-			return false;
+	private void applyEssConstraint(boolean unblocked) throws OpenemsNamedException {
+		ManagedSymmetricEss ess = this.componentManager.getComponent(this.config.ess_id());
+		var maxChargePower = (unblocked ? this.config.unblockedMaxChargePower() : this.config.blockedMaxChargePower())
+				* -1;
+
+		if (this.config.validatePowerConstraints()) {
+			var maxPower = ess.getPower().getMaxPower(ess, ALL, ACTIVE);
+			var minPower = ess.getPower().getMinPower(ess, ALL, ACTIVE);
+			var calculatedMaxChargePower = fitWithin(minPower, maxPower, maxChargePower);
+			ess.addPowerConstraintAndValidate(CONSTRAINT_ID, ALL, ACTIVE, GREATER_OR_EQUALS, calculatedMaxChargePower);
+		} else {
+			ess.addPowerConstraint(CONSTRAINT_ID, ALL, ACTIVE, GREATER_OR_EQUALS, maxChargePower);
 		}
 	}
 

@@ -25,8 +25,12 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 				.text("true, wenn die heutige Prognose-Pruefung den Block fuer den Rest des Tages aufgehoben hat")), //
 		PRICE_CURRENTLY_NEGATIVE(Doc.of(OpenemsType.BOOLEAN) //
 				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis (ENTSO-E) negativ ist")), //
+		WITHIN_TIME_WINDOW(Doc.of(OpenemsType.BOOLEAN) //
+				.text("true, wenn 'jetzt' innerhalb eines im JSCalendar konfigurierten Blockier-Zeitfensters "
+						+ "liegt - unabhaengig davon, ob Prognose/Preis die Blockade gerade aufheben")), //
 		CURRENTLY_BLOCKED(Doc.of(OpenemsType.BOOLEAN) //
-				.text("true, wenn der Ziel-Controller aktuell auf 'Ladeleistung waehrend Blockierung' steht")), //
+				.text("true, wenn aktuell tatsaechlich 'Ladeleistung waehrend Blockierung' als Power-Constraint "
+						+ "gesetzt ist")), //
 		NEGATIVE_PRICE_DURATION(Doc.of(OpenemsType.LONG) //
 				.unit(Unit.CUMULATED_SECONDS) //
 				.persistencePriority(PersistencePriority.HIGH) //
@@ -132,6 +136,24 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 	 */
 	public default void _setPriceCurrentlyNegative(boolean value) {
 		this.getPriceCurrentlyNegativeChannel().setNextValue(value);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#WITHIN_TIME_WINDOW}.
+	 *
+	 * @return the Channel
+	 */
+	public default BooleanReadChannel getWithinTimeWindowChannel() {
+		return this.channel(ChannelId.WITHIN_TIME_WINDOW);
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on {@link ChannelId#WITHIN_TIME_WINDOW}.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setWithinTimeWindow(boolean value) {
+		this.getWithinTimeWindowChannel().setNextValue(value);
 	}
 
 	/**
