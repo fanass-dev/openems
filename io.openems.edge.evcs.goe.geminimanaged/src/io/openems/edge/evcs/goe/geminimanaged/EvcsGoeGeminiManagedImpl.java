@@ -79,6 +79,9 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 	private static final int GOE_CAR_STATE_WAIT_CAR = 3;
 	private static final int GOE_CAR_STATE_COMPLETE = 4;
 
+	/** go-e API v2 'psm' value meaning single-phase charging is forced. */
+	private static final int PSM_FORCE_1_PHASE = 1;
+
 	private final Logger log = LoggerFactory.getLogger(EvcsGoeGeminiManagedImpl.class);
 
 	@Reference
@@ -124,6 +127,11 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 
 		this._setChargingType(ChargingType.AC);
 		this._setPowerPrecision(230);
+		// Initial default before the first status poll response arrives; updated
+		// to the actually configured phase count by handlePhaseSwitchMode() below.
+		// FixedMinimumHardwarePower/FixedMaximumHardwarePower stay constant
+		// 3-phase values - see handlePhaseSwitchMode() Javadoc for why.
+		this._setPhases(Phases.THREE_PHASE.getValue());
 		this._setFixedMinimumHardwarePower(
 				Math.round(config.minHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * Phases.THREE_PHASE.getValue());
 		this._setFixedMaximumHardwarePower(
@@ -223,13 +231,51 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 			JsonUtils.getAsOptionalString(json, "fwv").ifPresent(this::_setFirmwareVersion);
 
 			JsonUtils.getAsOptionalInt(json, "modelStatus").ifPresent(this::_setModelStatus);
-			JsonUtils.getAsOptionalInt(json, "psm").ifPresent(this::_setPhaseSwitchMode);
+			JsonUtils.getAsOptionalInt(json, "psm").ifPresent(this::handlePhaseSwitchMode);
 
 			this._setChargingstationCommunicationFailed(false);
 		} catch (Exception e) {
 			this._setChargingstationCommunicationFailed(true);
 			this.logDebug(this.log, "Konnte go-e Status nicht auswerten: " + e.getMessage());
 		}
+	}
+
+	/**
+	 * Updates the {@link Evcs.ChannelId#PHASES} channel from the
+	 * device-confirmed {@code psm} phase-switch mode.
+	 *
+	 * <p>
+	 * {@code Phases} was previously never set at all, which is wrong once
+	 * single-phase charging is force-selected via
+	 * {@link ChannelId#SET_PHASE_SWITCH_MODE}: {@link #applyChargePowerLimit(int)}
+	 * always converted Watt to Ampere assuming 3 phases (its {@code phases == 0}
+	 * fallback), undershooting the actual current in 1-phase mode. Also,
+	 * {@link Evcs#addCalculatePowerLimitListeners} - already wired up by
+	 * {@link AbstractManagedEvcsComponent} - listens on this very channel to
+	 * derive {@code MinimumHardwarePower}/{@code MaximumHardwarePower} from the
+	 * constant, always-3-phase {@code FixedMinimumHardwarePower}/
+	 * {@code FixedMaximumHardwarePower} (via {@link Phases#getFromThreePhase}):
+	 * without a correct {@code Phases} value that derivation silently stayed at
+	 * the 3-phase (~4 kW) minimum, so PV-surplus automatic charging never
+	 * started in 1-phase mode even though the available surplus would suffice.
+	 *
+	 * <p>
+	 * Do NOT additionally recompute {@code FixedMinimumHardwarePower}/
+	 * {@code FixedMaximumHardwarePower} here - they must stay constant 3-phase
+	 * values, since {@code addCalculatePowerLimitListeners} already scales them
+	 * down for the current phase count. Setting an already-scaled value here
+	 * previously caused that listener to divide by the phase count a second
+	 * time (e.g. 1-phase minimum ~1380 W got halved/thirded again to ~500 W).
+	 *
+	 * @param psm the raw go-e {@code psm} value (0=Auto, 1=Force 1-phase,
+	 *            2=Force 3-phase)
+	 */
+	private void handlePhaseSwitchMode(int psm) {
+		this._setPhaseSwitchMode(psm);
+		// psm=0 (Auto) is not yet actively used (automatic phase-switching is
+		// deferred, see readme.adoc) - default it to 3-phase like before.
+		var phases = psm == PSM_FORCE_1_PHASE ? 1 : 3;
+		this._setPhases(phases);
 	}
 
 	/**
@@ -335,12 +381,12 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 
 	@Override
 	public int getConfiguredMinimumHardwarePower() {
-		return Math.round(this.config.minHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * Phases.THREE_PHASE.getValue();
+		return Math.round(this.config.minHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * this.getPhasesAsInt();
 	}
 
 	@Override
 	public int getConfiguredMaximumHardwarePower() {
-		return Math.round(this.config.maxHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * Phases.THREE_PHASE.getValue();
+		return Math.round(this.config.maxHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * this.getPhasesAsInt();
 	}
 
 	@Override
