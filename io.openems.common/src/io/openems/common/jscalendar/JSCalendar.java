@@ -249,11 +249,19 @@ public class JSCalendar<PAYLOAD> {
 			this.clock = clock;
 			this.tasks = tasks;
 
-			var now = ZonedDateTime.now(this.clock);
-			var oneTasks = this._getOneTasksBetween(now, now.plusDays(1));
-			this.oneTasks = oneTasks.isEmpty() //
+			// NOTE: whether there is an OneTask in the next 24h from *this exact moment*
+			// is a snapshot, not a permanent fact - a daily recurring Task can easily
+			// have zero occurrences in one particular 24h lookahead (e.g. right after
+			// its window just ended) while still recurring again the next day. Only
+			// 'tasks.isEmpty()' (no Task definitions at all) is a fact that can never
+			// change for this instance and is therefore safe to cache permanently as
+			// 'null' below. Do NOT eagerly compute the 24h lookahead here - leave the
+			// TreeSet empty and let getActiveOneTask()'s existing refill logic
+			// (triggered by 'size() <= 1') (re-)compute it lazily, using *its own*
+			// call-time 'now' instead of the construction-time 'now'.
+			this.oneTasks = tasks.isEmpty() //
 					? null // will never have any OneTasks
-					: oneTasks;
+					: new TreeSet<>();
 		}
 
 		/**
