@@ -17,10 +17,13 @@ import io.openems.common.types.EntsoeBiddingZone;
 				+ "ist negativ - Aufhebung gilt nur, solange der Preis negativ bleibt, und wird automatisch "
 				+ "wieder zurueckgenommen, sobald der Preis zurueck ins Positive dreht (ausser Grund 1 greift zu "
 				+ "diesem Zeitpunkt ebenfalls). Ausserhalb des konfigurierten Zeitfensters ist grundsaetzlich "
-				+ "nicht blockiert. Ohne belastbare Prognose bzw. ohne gueltige ENTSO-E-Zugangsdaten wird davon "
-				+ "ausgegangen, dass geladen werden soll (fail-open) - ein Ausfall der Internetverbindung darf "
-				+ "das Laden nicht unterbinden. Setzt die Ladebegrenzung direkt als Power-Constraint auf den "
-				+ "konfigurierten Speicher, ohne einen zweiten Controller zu benoetigen/zu steuern.")
+				+ "nicht blockiert - das ist zugleich die Obergrenze fuer eine Blockade: sie kann nie laenger "
+				+ "dauern als bis zum Ende des jeweiligen Zeitfensters. Ohne belastbare Prognose (z. B. Ausfall "
+				+ "der Internetverbindung oder kein passender Predictor konfiguriert) traegt Grund (1) einfach "
+				+ "nichts zur Entscheidung bei - die Blockade bleibt dann so bestehen, wie es allein das "
+				+ "Zeitfenster vorgibt, und loest sich spaetestens mit dessen Ende von selbst auf. Setzt die "
+				+ "Ladebegrenzung direkt als Power-Constraint auf den konfigurierten Speicher, ohne einen "
+				+ "zweiten Controller zu benoetigen/zu steuern.")
 @interface Config {
 
 	@AttributeDefinition(name = "Component-ID", description = "Unique ID of this Component")
