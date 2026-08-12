@@ -215,7 +215,7 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			var forecastedWh = this.getForecastedAfternoonProductionChannel().value().get();
 			if (forecastedWh == null) {
 				forecastText = "Prognose: keine Daten verfuegbar (" + this.productionChannelAddress
-						+ ") -> hebt Block auf (fail-open)";
+						+ ") -> Zeitfenster entscheidet";
 			} else {
 				forecastText = "Prognose: " + forecastedWh + " Wh ab " + this.config.afternoonWindowStart()
 						+ " (Schwelle " + this.config.minRemainingProductionWh() + " Wh)"
@@ -236,9 +236,17 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	 * Sums the production forecast from {@link #afternoonWindowStart} until the
 	 * end of the current day and, if it falls below the configured threshold,
 	 * sets {@link #forecastLiftedToday} - which then lifts the block for the
-	 * remainder of the day. Also lifts (fail-open) if no forecast is available
-	 * at all - e.g. because of a lost internet connection - since a missing
-	 * data source must not be able to withhold charging indefinitely.
+	 * remainder of the day. If no forecast is available at all (e.g. because of
+	 * a lost internet connection, or no Predictor configured for
+	 * {@link Config#productionChannelId()}), {@link #forecastLiftedToday} is
+	 * deliberately left untouched - the forecast trigger simply does not
+	 * contribute an opinion, and the block/unblock decision falls back to the
+	 * time window (see {@link #run()}). This is safe because the block is
+	 * already bounded by that window (e.g. only until noon), never indefinite -
+	 * unlike an earlier version of this method, which force-unblocked on
+	 * missing data to avoid an indefinite block under the pre-time-window
+	 * design, but that made a merely temporarily unavailable forecast silently
+	 * defeat the window every time it triggered.
 	 *
 	 * @param now the current {@link ZonedDateTime}
 	 */
@@ -249,18 +257,16 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		var prediction = this.predictorManager.getPrediction(this.productionChannelAddress);
 		if (prediction.isEmpty()) {
 			this._setForecastedAfternoonProduction(null);
-			this.forecastLiftedToday = true;
 			this.logInfo(this.log, "Keine Prognose verfuegbar (" + this.productionChannelAddress
-					+ ") - Ladeblock fuer heute aufgehoben (fail-open)");
+					+ ") - Zeitfenster entscheidet");
 			return;
 		}
 
 		var values = prediction.getBetweenExclusive(afternoonStart, tomorrowMidnight).toList();
 		if (values.isEmpty()) {
 			this._setForecastedAfternoonProduction(null);
-			this.forecastLiftedToday = true;
-			this.logInfo(this.log, "Prognose vorhanden, aber keine Werte im Nachmittagsfenster - Ladeblock fuer "
-					+ "heute aufgehoben (fail-open)");
+			this.logInfo(this.log,
+					"Prognose vorhanden, aber keine Werte im Nachmittagsfenster - Zeitfenster entscheidet");
 			return;
 		}
 
