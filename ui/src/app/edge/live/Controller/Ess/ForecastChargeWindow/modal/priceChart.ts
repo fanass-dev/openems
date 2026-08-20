@@ -145,5 +145,21 @@ export class PriceChartComponent extends AbstractHistoryChart {
         };
         this.options.plugins.legend.display = false;
         this.options["animation"] = false;
+
+        // Thin vertical line marking 'now' at the moment the dialog was opened -
+        // deliberately not updated afterwards while the dialog stays open, so
+        // reuses the same 'now' already computed above for the past/future bar
+        // split, rather than a fresh timestamp.
+        this.options.plugins["annotation"] = {
+            annotations: {
+                nowLine: {
+                    type: "line",
+                    xMin: now,
+                    xMax: now,
+                    borderColor: "red",
+                    borderWidth: 1,
+                },
+            },
+        };
     }
 }
