@@ -2,13 +2,7 @@ name: Build OpenEMS Docker Image
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - develop
-      - main
-    tags:
-      - "*.*.*"
-    
+
 jobs:
   docker:
     runs-on: ubuntu-latest
