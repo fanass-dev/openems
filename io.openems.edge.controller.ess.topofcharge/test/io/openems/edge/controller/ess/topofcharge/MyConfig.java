@@ -8,7 +8,7 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	protected static class Builder {
 		private String id;
 		private String essId;
-		private int maxSoc;
+		private String jsCalendar = "[]";
 
 		private Builder() {
 		}
@@ -23,8 +23,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 			return this;
 		}
 
-		public Builder setMaxSoc(int maxSoc) {
-			this.maxSoc = maxSoc;
+		public Builder setJsCalendar(String jsCalendar) {
+			this.jsCalendar = jsCalendar;
 			return this;
 		}
 
@@ -55,8 +55,8 @@ public class MyConfig extends AbstractComponentConfig implements Config {
 	}
 
 	@Override
-	public int maxSoc() {
-		return this.builder.maxSoc;
+	public String jsCalendar() {
+		return this.builder.jsCalendar;
 	}
 
 }

@@ -1,21 +1,40 @@
 = Controller.Ess.TopOfCharge
 
-Begrenzt den Speicher-SOC auf einen konfigurierten Hoechstwert ("Top-Of-Charge"), indem die Ladeleistung per Power-Constraint auf 0 gesetzt wird, sobald der SOC diesen Wert erreicht/ueberschreitet. Entladen bleibt dabei jederzeit unbegrenzt moeglich.
+Begrenzt den Speicher-SOC auf einen Hoechstwert ("Top-Of-Charge"), indem die Ladeleistung per Power-Constraint auf 0 gesetzt wird, sobald der SOC diesen Wert erreicht/ueberschreitet. Entladen bleibt dabei jederzeit unbegrenzt moeglich.
 
 == Hintergrund
 
 Bisher war diese Begrenzung (z. B. 80 %) direkt in der PV-Anlage/im Wechselrichter konfiguriert. Ziel dieser Komponente ist es, die Funktionalitaet generisch (fuer beliebige `ManagedSymmetricEss`-Implementierungen, nicht Fronius-spezifisch) nach OpenEMS zu verlagern.
 
-== Umsetzung
+Der Zweck der Regel ist, dass der Speicher nicht unnoetig lange vollgeladen "herumsteht". Das ist primaer in den sommerlichen Monaten relevant (Speicher wird ohnehin schnell voll, Hausverbrauch gering) - in Herbst/Winter/Fruehjahr (hoher Verbrauch z. B. durch Waermepumpe, Speicher wird ohnehin oft nicht einmal voll) macht eine SOC-Deckelung tendenziell keinen Sinn. Deshalb kommt der Max-SOC-Wert aus einem Zeitplan statt einem einzigen festen Wert.
 
-Analog zu `Controller.Ess.LimitTotalDischarge` (dessen Spiegelbild: dort wird bei niedrigem SOC das *Entladen* begrenzt, hier bei hohem SOC das *Laden*): jeden Cycle wird geprueft, ob `SOC >= Max-SOC` gilt, und falls ja, `ess.setActivePowerGreaterOrEquals(0)` gesetzt (verhindert negative, also Lade-Leistung; positive, also Entlade-Leistung bleibt frei). Andernfalls wird `null` gesetzt, was eine zuvor gesetzte Begrenzung wieder aufhebt.
+== Umsetzung: Power-Constraint
+
+Analog zu `Controller.Ess.LimitTotalDischarge` (dessen Spiegelbild: dort wird bei niedrigem SOC das *Entladen* begrenzt, hier bei hohem SOC das *Laden*): jeden Cycle wird geprueft, ob `SOC >= aktueller Max-SOC` gilt, und falls ja, `ess.setActivePowerGreaterOrEquals(0)` gesetzt (verhindert negative, also Lade-Leistung; positive, also Entlade-Leistung bleibt frei). Andernfalls wird `null` gesetzt, was eine zuvor gesetzte Begrenzung wieder aufhebt.
 
 Kein eigener Eingriff in den Scheduler noetig ausser der ueblichen Prioritaet vor `Controller.Ess.Balancing` (wie bei `ForecastChargeWindow`/`ArbitrageDischarge`), damit die Begrenzung Balancings normale Selbstverbrauchsregelung tatsaechlich ueberschreiben kann, sobald sie aktiv ist.
 
-== Bewusst nicht in dieser Version: zeitliche Steuerung
+== Umsetzung: Max-SOC-Zeitplan (JSCalendar mit Payload)
 
-Der Zweck der Top-Of-Charge-Regel ist, dass der Speicher nicht unnoetig lange vollgeladen "herumsteht". Das ist primaer in den sommerlichen Monaten relevant (Speicher wird ohnehin schnell voll, Hausverbrauch gering) - in Herbst/Winter/Fruehjahr (hoher Verbrauch z. B. durch Waermepumpe, Speicher wird ohnehin oft nicht einmal voll) macht eine SOC-Deckelung tendenziell keinen Sinn.
+`Config#jsCalendar()` ist ein JSON-Array im JSCalendar-Format, bei dem jeder Task seinen eigenen Max-SOC-Wert als `openems.io:payload` traegt (`JSCalendar.Tasks<Integer>` statt `Tasks<Void>` wie bei `ForecastChargeWindow`/`ArbitrageDischarge`). Jeden Cycle liefert `maxSocSchedule.getActiveOneTask().payload()` den gerade geltenden Wert - deckt kein Task den aktuellen Zeitpunkt ab (z. B. leeres Array `[]`, oder eine Luecke zwischen zwei konfigurierten Zeitraeumen), gilt bewusst **kein** Limit (sicherer Default: fehlende Konfiguration schraenkt nie ungewollt ein).
 
-Diese erste Version hat dafuer bewusst noch keine Zeitsteuerung - `maxSoc` gilt ganzjaehrig fest. Vorgesehene spaetere Erweiterung (noch nicht umgesetzt): ein JSCalendar-Konfigurationsfeld, bei dem **jeder Task seinen eigenen Max-SOC-Wert als Payload traegt** (`JSCalendar.Tasks<Integer>` statt `Tasks<Void>` wie bei `ForecastChargeWindow`/`ArbitrageDischarge`) - z. B. ein Task pro (Gruppen von) Monat(en) mit jeweils eigenem Grenzwert, statt eines reinen "aktiv/inaktiv"-Zeitfensters mit separat konfiguriertem festen Wert. Der aktuell feste `maxSoc`-Konfigurationswert ist der Trivialfall dieses Designs (aequivalent zu einem einzigen ganzjaehrig geltenden Task) - der Umstieg waere rein additiv, ohne Aenderung der eigentlichen Constraint-Logik in `run()`.
+Beispiel - ganzjaehrig 100 % (kein Limit), aber 80 % waehrend der Sommermonate:
 
-Zu beachten dabei (fuer die spaetere Umsetzung): die JSCalendar-Engine hat aktuell kein implementiertes `yearly`-Recurrence (`RecurrenceRule.getNextOccurrence()` liefert fuer `YEARLY` schlicht `null`) - eine jaehrlich wiederkehrende Monatszuordnung muesste daher, wie bei `ForecastChargeWindow`s bestehender Konfiguration, pro Kalenderjahr einzeln als `daily`-Task mit `until` = Startdatum und einer `duration`, die den gesamten Zeitraum abdeckt, konfiguriert werden - oder die Engine muesste vorher um echte `yearly`-Unterstuetzung erweitert werden.
+[source,json]
+----
+[
+  { "@type": "Task", "start": "2026-01-01T00:00:00", "duration": "P1D",
+    "recurrenceRules": [{ "frequency": "daily", "until": "2026-04-30" }],
+    "openems.io:payload": 100 },
+  { "@type": "Task", "start": "2026-05-01T00:00:00", "duration": "P1D",
+    "recurrenceRules": [{ "frequency": "daily", "until": "2026-09-30" }],
+    "openems.io:payload": 80 },
+  { "@type": "Task", "start": "2026-10-01T00:00:00", "duration": "P1D",
+    "recurrenceRules": [{ "frequency": "daily", "until": "2026-12-31" }],
+    "openems.io:payload": 100 }
+]
+----
+
+**Format-Wahl**: `duration: "P1D"` (ein Tag) mit `recurrenceRules[].until` = tatsaechliches Enddatum, statt einer einzelnen langen `duration` mit `until` = Startdatum (letzteres waere kuerzer, aber unhandlich: Tage muessten pro Zeitraum manuell ausgezaehlt werden, und "start == until" ist auf den ersten Blick schwer verstaendlich). Die Engine reiht aufeinanderfolgende Tage desselben Tasks automatisch zu einem durchgehenden Zeitraum zusammen - verifiziert per Testfall (Grenzwerte an allen Monatsuebergaengen, inkl. Bestaetigung, dass daraus intern wieder ein zusammenhaengendes Fragment wird), funktional identisch zur kompakteren Variante.
+
+**Kein `yearly` verfuegbar**: die JSCalendar-Engine hat aktuell kein implementiertes `yearly`-Recurrence (`RecurrenceRule.getNextOccurrence()` liefert fuer `YEARLY` schlicht `null`). Eine jaehrlich wiederkehrende Monatszuordnung muss daher, wie bei `ForecastChargeWindow`s bestehender Konfiguration, pro Kalenderjahr einzeln konfiguriert werden (derselbe Block noch einmal mit verschobenen Jahreszahlen) - oder die Engine muesste vorher um echte `yearly`-Unterstuetzung erweitert werden.
