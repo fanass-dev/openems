@@ -96,6 +96,7 @@
 	bnd.identity;id='io.openems.edge.controller.ess.sohcycle',\
 	bnd.identity;id='io.openems.edge.controller.ess.standby',\
 	bnd.identity;id='io.openems.edge.controller.ess.timeofusetariff',\
+	bnd.identity;id='io.openems.edge.controller.ess.topofcharge',\
 	bnd.identity;id='io.openems.edge.controller.evcs',\
 	bnd.identity;id='io.openems.edge.controller.evcs.fixactivepower',\
 	bnd.identity;id='io.openems.edge.controller.evse',\
@@ -509,5 +510,6 @@
 	io.openems.edge.controller.ess.forecastchargewindow;version=snapshot,\
 	io.openems.edge.evcs.goe.geminimanaged;version=snapshot,\
 	io.openems.edge.bridge.eos;version=snapshot,\
-	io.openems.edge.controller.api.eos;version=snapshot
+	io.openems.edge.controller.api.eos;version=snapshot,\
+	io.openems.edge.controller.ess.topofcharge;version=snapshot
 -resolve: manual
