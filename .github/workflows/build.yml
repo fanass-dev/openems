@@ -20,6 +20,13 @@ jobs:
           java-version: '21'
           cache: gradle
 
+      - name: Cache bnd resolver downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/.bnd/urlcache
+          key: ${{ runner.os }}-bnd-urlcache-${{ hashFiles('**/bnd.bnd', 'cnf/**') }}
+          restore-keys: ${{ runner.os }}-bnd-urlcache-
+
       - uses: kiancross/checkstyle-annotations-action@v1
 
       - name: Checkstyle
