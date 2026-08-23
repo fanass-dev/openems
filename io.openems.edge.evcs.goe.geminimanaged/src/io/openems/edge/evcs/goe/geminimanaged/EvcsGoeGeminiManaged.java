@@ -5,10 +5,12 @@ import org.osgi.service.event.EventHandler;
 import io.openems.common.channel.AccessMode;
 import io.openems.common.channel.Unit;
 import io.openems.common.types.OpenemsType;
+import io.openems.edge.common.channel.Channel;
 import io.openems.edge.common.channel.Doc;
 import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.channel.IntegerWriteChannel;
 import io.openems.edge.common.channel.StringReadChannel;
+import io.openems.edge.common.channel.WriteChannel;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.evcs.api.Evcs;
 import io.openems.edge.evcs.api.ManagedEvcs;
@@ -41,7 +43,17 @@ public interface EvcsGoeGeminiManaged extends ManagedEvcs, Evcs, OpenemsComponen
 				.accessMode(AccessMode.READ_WRITE) //
 				.text("Schreibt das go-e-Feld 'psm' (0=Automatisch, 1=Einphasig erzwingen, "
 						+ "2=Dreiphasig erzwingen) - die Geraet uebernimmt die noetige Ladepause/Wartezeit "
-						+ "beim Umschalten selbststaendig, siehe readme.adoc"));
+						+ "beim Umschalten selbststaendig, siehe readme.adoc")), //
+		PHASE_CONTROL_MODE(Doc.of(PhaseControlMode.values()) //
+				.text("Aktueller OpenEMS-seitiger Phasen-Steuerungsmodus - 'Automatic' bedeutet die eigene "
+						+ "PV-Ueberschuss-/Zeit-Hysterese-Logik dieser Komponente, NICHT den geraeteeigenen "
+						+ "psm=0-Automatikmodus")), //
+		SET_PHASE_CONTROL_MODE(Doc.of(PhaseControlMode.values()) //
+				.accessMode(AccessMode.READ_WRITE) //
+				.text("Setzt den Phasen-Steuerungsmodus. Diese Komponente ist die einzige Stelle, die "
+						+ "tatsaechlich SET_PHASE_SWITCH_MODE beschreibt - bei 'Force 1-phase'/'Force 3-phase' "
+						+ "wird das sofort einmalig umgesetzt, bei 'Automatic' jeden Cycle neu anhand von "
+						+ "PV-Ueberschuss und den konfigurierten Hysterese-Zeiten entschieden."));
 
 		private final Doc doc;
 
@@ -153,5 +165,59 @@ public interface EvcsGoeGeminiManaged extends ManagedEvcs, Evcs, OpenemsComponen
 	 */
 	public default IntegerWriteChannel getSetPhaseSwitchModeChannel() {
 		return this.channel(ChannelId.SET_PHASE_SWITCH_MODE);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#PHASE_CONTROL_MODE}.
+	 *
+	 * @return the Channel
+	 */
+	public default Channel<PhaseControlMode> getPhaseControlModeChannel() {
+		return this.channel(ChannelId.PHASE_CONTROL_MODE);
+	}
+
+	/**
+	 * Gets the current {@link ChannelId#PHASE_CONTROL_MODE}.
+	 *
+	 * @return the value
+	 */
+	public default PhaseControlMode getPhaseControlMode() {
+		return this.getPhaseControlModeChannel().value().asEnum();
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#PHASE_CONTROL_MODE}.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setPhaseControlMode(PhaseControlMode value) {
+		this.getPhaseControlModeChannel().setNextValue(value);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#SET_PHASE_CONTROL_MODE}.
+	 *
+	 * <p>
+	 * Deliberately {@code WriteChannel<Integer>}, not
+	 * {@code WriteChannel<PhaseControlMode>} or the concrete
+	 * {@code IntegerWriteChannel}/{@code EnumWriteChannel} classes:
+	 * {@link EnumDoc#createChannelInstance} actually instantiates
+	 * {@code EnumWriteChannel implements WriteChannel<Integer>} for a
+	 * read-write enum Doc - casting the return of {@link #channel} to a
+	 * concrete class that does not match (e.g. {@code IntegerWriteChannel})
+	 * throws a {@link ClassCastException} at the cast itself (erasure makes
+	 * that check happen for concrete classes, not for generic interface type
+	 * parameters). Using the generic {@code WriteChannel<Integer>} interface
+	 * here avoids that entirely - {@link WriteChannel#getNextWriteValue()}
+	 * genuinely returns a raw {@link Integer} (not auto-converted, unlike the
+	 * read side's {@code Value#asEnum()}, see {@link #getPhaseControlMode()}).
+	 * Callers must convert explicitly, e.g. via
+	 * {@code OptionsEnum.getOptionOrUndefined(PhaseControlMode.class, value)}.
+	 *
+	 * @return the Channel
+	 */
+	public default WriteChannel<Integer> getSetPhaseControlModeChannel() {
+		return this.channel(ChannelId.SET_PHASE_CONTROL_MODE);
 	}
 }

@@ -55,5 +55,24 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 					+ "aendert - schont die Hardware (siehe Beschreibung oben zu Firmware-Berichten).")
 	int writeIntervalSeconds() default 30;
 
+	@AttributeDefinition(name = "Automatik: Umschalt-Schwellwert [W]", //
+			description = "Nur relevant im Phasen-Steuerungsmodus 'Automatic'. Ab diesem PV-Ueberschuss wird "
+					+ "(nach Ablauf der Hoch-/Runterschalt-Dauer) auf 3-phasig geschaltet bzw. bei "
+					+ "Unterschreitung zurueck auf 1-phasig - derselbe Wert fuer beide Richtungen.")
+	int phaseSwitchThresholdWatt() default 5000;
+
+	@AttributeDefinition(name = "Automatik: Hochschalt-Dauer [s]", //
+			description = "Nur relevant im Phasen-Steuerungsmodus 'Automatic'. Der PV-Ueberschuss muss diese "
+					+ "Dauer lang durchgehend ueber dem Schwellwert liegen, bevor tatsaechlich auf 3-phasig "
+					+ "umgeschaltet wird.")
+	int phaseSwitchUpDurationSeconds() default 300;
+
+	@AttributeDefinition(name = "Automatik: Runterschalt-Dauer [s]", //
+			description = "Nur relevant im Phasen-Steuerungsmodus 'Automatic'. Der PV-Ueberschuss muss diese "
+					+ "Dauer lang durchgehend unter dem Schwellwert liegen, bevor zurueck auf 1-phasig "
+					+ "umgeschaltet wird. Bewusst laenger als die Hochschalt-Dauer, damit kurze Wolkenschatten "
+					+ "nicht sofort zum Zurueckschalten fuehren.")
+	int phaseSwitchDownDurationSeconds() default 600;
+
 	String webconsole_configurationFactory_nameHint() default "EVCS go-e Gemini Managed [{id}]";
 }

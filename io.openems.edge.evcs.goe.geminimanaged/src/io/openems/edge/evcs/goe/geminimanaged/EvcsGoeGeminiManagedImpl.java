@@ -7,6 +7,8 @@ import static io.openems.common.utils.JsonUtils.parseToJsonObject;
 import static java.util.Collections.emptyMap;
 
 import java.net.UnknownHostException;
+import java.time.Duration;
+import java.time.Instant;
 
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
@@ -28,14 +30,17 @@ import com.google.gson.JsonObject;
 
 import io.openems.common.bridge.http.api.BridgeHttp;
 import io.openems.common.bridge.http.api.BridgeHttpFactory;
+import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.common.exceptions.OpenemsException;
 import io.openems.common.types.MeterType;
+import io.openems.common.types.OptionsEnum;
 import io.openems.common.utils.JsonUtils;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleService;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleServiceDefinition;
 import io.openems.edge.common.channel.IntegerReadChannel;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.event.EdgeEventConstants;
+import io.openems.edge.common.sum.Sum;
 import io.openems.edge.evcs.api.AbstractManagedEvcsComponent;
 import io.openems.edge.evcs.api.CalculateEnergySession;
 import io.openems.edge.evcs.api.ChargingType;
@@ -81,11 +86,16 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 
 	/** go-e API v2 'psm' value meaning single-phase charging is forced. */
 	private static final int PSM_FORCE_1_PHASE = 1;
+	/** go-e API v2 'psm' value meaning three-phase charging is forced. */
+	private static final int PSM_FORCE_3_PHASE = 2;
 
 	private final Logger log = LoggerFactory.getLogger(EvcsGoeGeminiManagedImpl.class);
 
 	@Reference
 	private EvcsPower evcsPower;
+
+	@Reference
+	private Sum sum;
 
 	@Reference
 	private BridgeHttpFactory httpBridgeFactory;
@@ -107,6 +117,22 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 	private final CalculateEnergyFromPower calculateEnergy = new CalculateEnergyFromPower(this,
 			ElectricityMeter.ChannelId.ACTIVE_PRODUCTION_ENERGY);
 	private final CalculateEnergySession calculateEnergySession = new CalculateEnergySession(this);
+
+	/**
+	 * Since when the PV surplus has been continuously at/above
+	 * {@link Config#phaseSwitchThresholdWatt()} - null while it isn't (or while
+	 * {@link PhaseControlMode#AUTOMATIC} is not active). See
+	 * {@link #evaluatePhaseControlMode()}.
+	 */
+	private Instant switchUpConditionSince = null;
+
+	/**
+	 * Since when the PV surplus has been continuously below
+	 * {@link Config#phaseSwitchThresholdWatt()} - null while it isn't (or while
+	 * {@link PhaseControlMode#AUTOMATIC} is not active). See
+	 * {@link #evaluatePhaseControlMode()}.
+	 */
+	private Instant switchDownConditionSince = null;
 
 	protected Config config;
 
@@ -136,6 +162,9 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 				Math.round(config.minHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * Phases.THREE_PHASE.getValue());
 		this._setFixedMaximumHardwarePower(
 				Math.round(config.maxHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * Phases.THREE_PHASE.getValue());
+		// Safe default on every (re-)activation, e.g. after a restart - automatic
+		// phase-switching must always be explicitly (re-)selected, never assumed.
+		this._setPhaseControlMode(PhaseControlMode.FORCE_1_PHASE);
 
 		this.httpBridge = this.httpBridgeFactory.get();
 		this.cycleService = this.httpBridge.createService(this.httpBridgeCycleServiceDefinition);
@@ -163,7 +192,92 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 		if (EdgeEventConstants.TOPIC_CYCLE_AFTER_PROCESS_IMAGE.equals(event.getTopic())) {
 			this.calculateEnergy.update(this.getActivePower().get());
 			this.calculateEnergySession.update(this.isVehicleConnected());
+			this.evaluatePhaseControlMode();
 			this.applyPhaseSwitchModeWrite();
+		}
+	}
+
+	/**
+	 * Handles {@link EvcsGoeGeminiManaged.ChannelId#SET_PHASE_CONTROL_MODE} and,
+	 * while {@link PhaseControlMode#AUTOMATIC} is active, decides based on PV
+	 * surplus and the configured hysteresis durations whether to (re-)request a
+	 * forced phase via {@link ChannelId#SET_PHASE_SWITCH_MODE} - picked up and
+	 * actually sent to the device by {@link #applyPhaseSwitchModeWrite()} right
+	 * after this method runs in the same Cycle. This Component is the sole
+	 * writer of {@link ChannelId#SET_PHASE_SWITCH_MODE}; the UI is expected to
+	 * write {@link ChannelId#SET_PHASE_CONTROL_MODE} instead, never the former
+	 * directly, so there is never more than one writer deciding the actual
+	 * device command.
+	 */
+	private void evaluatePhaseControlMode() {
+		// Written via SetChannelValueRequest (e.g. from the UI), the pending value
+		// is stored as a raw Integer, not auto-converted to PhaseControlMode - see
+		// getSetPhaseControlModeChannel() Javadoc for why this channel is declared
+		// as IntegerWriteChannel and must be converted explicitly here.
+		var rawModeWrite = this.getSetPhaseControlModeChannel().getNextWriteValueAndReset();
+		if (rawModeWrite.isPresent()) {
+			var mode = OptionsEnum.getOptionOrUndefined(PhaseControlMode.class, rawModeWrite.get());
+			this._setPhaseControlMode(mode);
+			// A mode change always resets the hysteresis timers - forcing a fixed
+			// phase takes effect immediately, and 'Automatic' starts observing the
+			// surplus fresh rather than reusing a timer from a previous activation.
+			this.switchUpConditionSince = null;
+			this.switchDownConditionSince = null;
+			switch (mode) {
+			case FORCE_1_PHASE -> this.requestPhaseSwitchMode(PSM_FORCE_1_PHASE);
+			case FORCE_3_PHASE -> this.requestPhaseSwitchMode(PSM_FORCE_3_PHASE);
+			case AUTOMATIC, UNDEFINED -> {
+				// Evaluated below, every Cycle, instead of once on mode change.
+			}
+			}
+		}
+
+		if (this.getPhaseControlMode() != PhaseControlMode.AUTOMATIC) {
+			return;
+		}
+
+		// 'Natural' surplus with this Evcs' own current draw subtracted out, so the
+		// decision does not chase its own effect once a phase switch changes how
+		// much this Evcs itself draws (same idiom as elsewhere in this codebase,
+		// e.g. Controller.Ess.ArbitrageDischarge's gridPower+essPower trick).
+		var surplus = -this.sum.getGridActivePower().orElse(0) + this.getActivePower().orElse(0);
+		var threshold = this.config.phaseSwitchThresholdWatt();
+		var now = Instant.now();
+		var currentlyThreePhase = this.getPhasesAsInt() == 3;
+
+		if (surplus >= threshold) {
+			this.switchDownConditionSince = null;
+			if (this.switchUpConditionSince == null) {
+				this.switchUpConditionSince = now;
+			}
+			if (!currentlyThreePhase && Duration.between(this.switchUpConditionSince, now)
+					.getSeconds() >= this.config.phaseSwitchUpDurationSeconds()) {
+				this.requestPhaseSwitchMode(PSM_FORCE_3_PHASE);
+			}
+		} else {
+			this.switchUpConditionSince = null;
+			if (this.switchDownConditionSince == null) {
+				this.switchDownConditionSince = now;
+			}
+			if (currentlyThreePhase && Duration.between(this.switchDownConditionSince, now)
+					.getSeconds() >= this.config.phaseSwitchDownDurationSeconds()) {
+				this.requestPhaseSwitchMode(PSM_FORCE_1_PHASE);
+			}
+		}
+	}
+
+	/**
+	 * Sets {@link ChannelId#SET_PHASE_SWITCH_MODE}'s next write value, picked up
+	 * by {@link #applyPhaseSwitchModeWrite()} right after this is called within
+	 * the same Cycle.
+	 *
+	 * @param psm the raw go-e {@code psm} value to request (1 or 2)
+	 */
+	private void requestPhaseSwitchMode(int psm) {
+		try {
+			this.getSetPhaseSwitchModeChannel().setNextWriteValue(psm);
+		} catch (OpenemsNamedException e) {
+			this.logWarn(this.log, "Konnte Phasenumschaltung nicht anfordern: " + e.getMessage());
 		}
 	}
 

@@ -1,16 +1,22 @@
 @if (isInitialized) {
   <oe-flat-widget [title]="'Phasenumschaltung'" [icon]="{name: 'swap-horizontal-outline', color: 'normal'}">
     <ion-row class="ion-justify-content-center ion-align-items-center">
-      <ion-col size="6">
+      <ion-col size="4">
         <ion-button expand="block" [disabled]="pending"
-          [fill]="currentPhaseSwitchMode === 1 ? 'solid' : 'outline'" (click)="setPhaseSwitchMode(1)">
+          [fill]="currentPhaseControlMode === 1 ? 'solid' : 'outline'" (click)="setPhaseControlMode(1)">
           1-phasig
         </ion-button>
       </ion-col>
-      <ion-col size="6">
+      <ion-col size="4">
         <ion-button expand="block" [disabled]="pending"
-          [fill]="currentPhaseSwitchMode === 2 ? 'solid' : 'outline'" (click)="setPhaseSwitchMode(2)">
+          [fill]="currentPhaseControlMode === 2 ? 'solid' : 'outline'" (click)="setPhaseControlMode(2)">
           3-phasig
+        </ion-button>
+      </ion-col>
+      <ion-col size="4">
+        <ion-button expand="block" [disabled]="pending"
+          [fill]="currentPhaseControlMode === 0 ? 'solid' : 'outline'" (click)="setPhaseControlMode(0)">
+          Automatisch
         </ion-button>
       </ion-col>
     </ion-row>

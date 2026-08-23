@@ -138,13 +138,51 @@ Nur-Lese-Bundle `Evcs.Goe.Http`:
   auf die ID dieser neuen Komponente zeigen, nicht auf die alte
   Nur-Lese-Instanz).
 
-== Manuelle Phasenumschaltung (`psm`)
+== Phasenumschaltung (`psm`) - manuell und automatisch
 
-Umschaltbar zwischen ein- und dreiphasigem Laden - **manuell**, per Klick in
-einer eigenen Live-Kachel (nicht Teil der geteilten, generischen
-Evcs-Live-Kachel, siehe unten). Eine automatische, PV-Überschuss-basierte
-Umschaltung ist bewusst noch **nicht** umgesetzt (auf Wunsch des Betreibers
-vorerst zurückgestellt).
+Umschaltbar zwischen ein- und dreiphasigem Laden, per Klick in einer eigenen
+Live-Kachel (nicht Teil der geteilten, generischen Evcs-Live-Kachel, siehe
+unten) - wahlweise manuell erzwungen oder mit einer eigenen,
+PV-Überschuss-basierten Automatik.
+
+=== Warum kein eigener, generischer Controller
+
+Ein naheliegender erster Gedanke war ein eigenständiger
+`Controller.Ess`/`Controller.Evcs`-artiger Controller für die automatische
+Umschaltung. Das würde aber faelschlich suggerieren, es gaebe dafuer eine
+generische OpenEMS-Schnittstelle, die fuer beliebige Wallboxen gilt -
+tatsaechlich unterstuetzt **keine** andere EVCS-Implementierung in diesem
+Repo Phasenumschaltung ueberhaupt (kein entsprechender Kanal in
+`io.openems.edge.evcs.api` oder einer der anderen `io.openems.edge.evcs.*`-Bundles).
+Die Automatik-Logik lebt deshalb direkt in diesem, ohnehin schon
+go-e-spezifischen Bundle statt in einem separaten, allgemein klingenden
+Controller.
+
+=== OpenEMS-seitiger Steuerungsmodus (`PhaseControlMode`)
+
+Neuer Kanal `PhaseControlMode`/`SetPhaseControlMode` (`Automatic`/`Force
+1-phase`/`Force 3-phase`) - **dieses Bundle ist die einzige Stelle, die
+tatsaechlich `SetPhaseSwitchMode` (das rohe go-e-Feld `psm`) beschreibt**.
+Die Live-Kachel schreibt seitdem nicht mehr direkt `SetPhaseSwitchMode`,
+sondern `SetPhaseControlMode` - dadurch gibt es nie zwei unabhaengige
+Schreiber, die sich gegenseitig ueberschreiben koennten.
+
+`Automatic` bedeutet **nicht** das geraeteeigene `psm=0`. Stattdessen
+entscheidet `evaluatePhaseControlMode()` jeden Cycle selbst, indem der
+"natuerliche" PV-Ueberschuss (Netzleistung mit der eigenen aktuellen
+Ladeleistung herausgerechnet, wie bei `Controller.Ess.ArbitrageDischarge`)
+mit einem konfigurierten Schwellwert (`phaseSwitchThresholdWatt`, Default
+5000 W) verglichen wird. Damit kurze Wolkenschatten nicht zu staendigem
+Hin-und-Her-Schalten fuehren, muss die Bedingung eine konfigurierte Dauer
+lang **durchgehend** gelten, bevor tatsaechlich umgeschaltet wird -
+bewusst asymmetrisch: `phaseSwitchUpDurationSeconds` (Default 5 Minuten)
+fuer den Wechsel auf 3-phasig, `phaseSwitchDownDurationSeconds` (Default 10
+Minuten, laenger) fuer den Wechsel zurueck auf 1-phasig.
+
+**Default ist `Force 1-phase`, nicht `Automatic`** - bei jeder (Re-)Aktivierung
+der Komponente (auch nach einem Neustart), nicht nur beim allerersten Mal.
+Automatische Umschaltung muss explizit ueber die Live-Kachel aktiviert
+werden.
 
 **Falsches Feld korrigiert**: Frühere Version dieser readme.adoc nannte `psh`
 als (fehlendes) Phasenumschaltungsfeld - das war ungenau. `psh` ist nur die
@@ -166,10 +204,13 @@ konfigurierbar) - dieses Bundle muss die Pause/Wartezeit daher **nicht**
 selbst orchestrieren, sondern schreibt `psm` einmalig bei Klick und wartet
 ansonsten nicht aktiv.
 
-Neue Channels: `SetPhaseSwitchMode` (WriteChannel, 0/1/2), `PhaseSwitchMode`
-(vom Gerät zuletzt bestätigter Wert), `ModelStatus` (Rohwert des go-e-Feldes
-`modelStatus` - Diagnose, warum gerade (nicht) geladen wird, z. B. während
-des kurzen Phasenwechsel-Unterbruchs).
+Channels: `SetPhaseSwitchMode` (WriteChannel, 0/1/2 - wird nur noch intern
+von diesem Bundle selbst beschrieben), `PhaseSwitchMode` (vom Gerät zuletzt
+bestätigter Wert), `ModelStatus` (Rohwert des go-e-Feldes `modelStatus` -
+Diagnose, warum gerade (nicht) geladen wird, z. B. während des kurzen
+Phasenwechsel-Unterbruchs), `PhaseControlMode`/`SetPhaseControlMode`
+(OpenEMS-seitiger Steuerungsmodus, siehe oben - das ist der Kanal, den die
+Live-Kachel tatsächlich beschreibt).
 
 **Eigene Live-Kachel statt der geteilten Evcs-Kachel**: Die normale
 Live-Ansicht-Kachel für EVCS-Komponenten (`Controller_Evcs`) ist in OpenEMS
