@@ -525,6 +525,14 @@
                     "RPC_FAILED": "Befehl ausführen fehlgeschlagen",
                     "OVERALL_SYSTEM": "Gesamtsystem"
                 },
+                "FORECAST_CHARGE_WINDOW": {
+                    "PRICE": "Börsenpreis",
+                    "NEGATIVE_PRICE_DURATION": "Negativer Preis",
+                    "LAST_DECISION": "Letzte Entscheidung",
+                    "CHART_TITLE": "Day-Ahead-Preis heute",
+                    "BLOCKED": "Block aktiv",
+                    "UNBLOCKED": "Block aufgehoben"
+                },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Aktive Beladung aus dem Netz aktivieren",
                     "CHART_TITLE": "Aktueller Fahrplan",

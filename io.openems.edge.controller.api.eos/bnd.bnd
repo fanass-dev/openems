@@ -1,0 +1,14 @@
+Bundle-Name: OpenEMS Edge Controller Api Eos Measurement
+Bundle-Vendor: My Company
+Bundle-License: https://opensource.org/licenses/EPL-2.0
+Bundle-Version: 1.0.0.${tstamp}
+
+-buildpath: \
+	${buildpath},\
+	io.openems.common,\
+	io.openems.edge.bridge.eos,\
+	io.openems.edge.common,\
+	io.openems.edge.controller.api,\
+
+-testpath: \
+	${testpath}

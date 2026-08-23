@@ -31,13 +31,13 @@ auf:
   unvergütet ins Netz eingespeist, während die Batterie danach mangels Sonne
   gar nicht mehr voll würde.
 * **Negativer Börsenpreis** (fortlaufend geprüft): wenn der aktuelle
-  Day-Ahead-Verkaufspreis (über `TariffManager`/`TariffGridSell`, z. B.
-  `Tariff.Manual.EEG2025.GridSell`) negativ ist, wird der Block **sofort**
-  aufgehoben und automatisch wieder aktiviert, sobald der Preis zurück ins
-  Positive dreht (außer die Prognose-Aufhebung greift zu diesem Zeitpunkt
-  ebenfalls). Grund: eine Einspeisung bei negativem Preis kostet Geld -
-  besser die Batterie laden, statt einzuspeisen, unabhängig davon, ob das
-  gerade in die Mittagskonzentration passt.
+  Day-Ahead-Preis - direkt von der ENTSO-E Transparency Platform, siehe
+  "Warum direkter ENTSO-E-Zugriff" unten - negativ ist, wird der Block
+  **sofort** aufgehoben und automatisch wieder aktiviert, sobald der Preis
+  zurück ins Positive dreht (außer die Prognose-Aufhebung greift zu diesem
+  Zeitpunkt ebenfalls). Grund: eine Einspeisung bei negativem Preis kostet
+  Geld - besser die Batterie laden, statt einzuspeisen, unabhängig davon, ob
+  das gerade in die Mittagskonzentration passt.
 
 Beide Gründe wirken auf denselben Hebel (`maxChargePower` des
 Ziel-Controllers) und sind mit ODER verknüpft: es reicht, wenn einer der
@@ -56,8 +56,9 @@ Hintergrund-Thread nötig):
   (Standard 12:00) bis Tagesende. Liegt die Summe unter
   `minRemainingProductionWh`, wird `forecastLiftedToday` für den Rest des
   Tages auf `true` gesetzt.
-* **Preis-Prüfung** (jeden Cycle): fragt bei `TariffManager` den
-  Verkaufspreis für die aktuelle Viertelstunde ab.
+* **Preis-Prüfung** (jeden Cycle): fragt direkt beim
+  `EntsoeMarketPriceProviderPool` (Bundle `io.openems.edge.timeofusetariff.entsoe`)
+  den Day-Ahead-Preis für die aktuelle Viertelstunde ab.
 * Aus beiden Zuständen wird der Ziel-Zustand
   (`forecastLiftedToday || preisAktuellNegativ`) berechnet. Ändert sich
   dieser Ziel-Zustand gegenüber dem zuletzt tatsächlich geschriebenen Wert,
@@ -88,10 +89,10 @@ Zeitfensters setzt - außerhalb davon gibt es nichts zu überschreiben.
 Liefert `PredictorManager.getPrediction(...)` keine (oder eine leere)
 Prognose - z. B. während der ersten ca. 30 Tage nach Einrichtung eines
 `Predictor.Production.LinearModel` (braucht mindestens 30 Tage historische
-Trainingsdaten) - oder liefert `TariffManager.getGridSellDayAheadPrices()`
-keinen Preis für den aktuellen Zeitpunkt (kein `TariffGridSell`-Provider
-konfiguriert, oder Abruf fehlgeschlagen), zählt der jeweilige Grund einfach
-nicht als "Aufhebung rechtfertigend". Ist keiner der beiden Gründe erfüllt,
+Trainingsdaten) - oder liefert `EntsoeMarketPriceProvider.getMarketPrices()`
+keinen Preis für den aktuellen Zeitpunkt (ungültige/fehlende ENTSO-E-Zugangsdaten,
+oder Abruf fehlgeschlagen), zählt der jeweilige Grund einfach nicht als
+"Aufhebung rechtfertigend". Ist keiner der beiden Gründe erfüllt,
 bleibt der Block wie gewohnt aktiv (`blockedMaxChargePower`). Der Controller
 kann also nur zusätzlichen Nutzen bringen, nie eine Verschlechterung
 gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
@@ -103,11 +104,13 @@ gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
   Wetterprognose, nicht nur historische Werte), passend zum
   `sourceChannel`-Feld dort (Standard beider Seiten:
   `UnmanagedProductionActivePower`).
-* Optional, für die Preis-Prüfung: eine aktive `TariffGridSell`-Instanz,
-  z. B. `Tariff.Manual.EEG2025.GridSell` (braucht ein ENTSO-E-Konto samt
-  Security Token, `Bidding Zone` = `GERMANY`). Ohne diese Komponente
-  liefert `TariffManager` einfach keinen Preis, die Preis-Prüfung greift
-  dann nie (fail-safe, siehe oben) - kein Fehler, kein Absturz.
+* Für die Preis-Prüfung: ein gültiges ENTSO-E-Konto samt Security Token,
+  in der Config dieses Controllers selbst als `securityToken` und
+  `biddingZone` (`GERMANY`) eingetragen (siehe "Warum direkter
+  ENTSO-E-Zugriff" unten). Ohne gültige Zugangsdaten bzw. bei
+  fehlgeschlagenem Abruf liefert `getMarketPrices()` einfach keinen Preis,
+  die Preis-Prüfung greift dann nie (fail-safe, siehe oben) - kein Fehler,
+  kein Absturz.
 * Dieser Controller muss selbst im Scheduler aktiv sein (z. B. bei
   `Scheduler.JSCalendar` in `alwaysRunBeforeController_ids`/
   `alwaysRunAfterController_ids` eintragen) - sonst wird `run()` nie
@@ -116,6 +119,75 @@ gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
   Instanz zeigen, deren `maxChargePower`-Feld diesem Controller "gehört" -
   andere Config-Änderungen an dieser Instanz nicht parallel von Hand
   vornehmen, sie würden bei der nächsten Prüfung überschrieben.
+
+== Warum direkter ENTSO-E-Zugriff (nicht über TariffManager/EEG2025)
+
+Ursprünglich las dieser Controller den Preis über die generische
+`TariffManager`/`TariffGridSell`-Schnittstelle, gespeist von
+`Tariff.Manual.EEG2025.GridSell`. Das erwies sich als ungeeignet für diesen
+Zweck: `Tariff.Manual.EEG2025.GridSell` bildet die EEG2025-Einspeisevergütung
+ab (fester, selbst konfigurierter Satz, gesetzeskonform auf exakt `0,0`
+gekappt in Stunden mit negativem Marktpreis - **nicht** der tatsächliche
+negative Wert). Zwei Konsequenzen:
+
+* Die History-Grafik von `CurrentGridSellPrice` zeigte dadurch nur den
+  eigenen, ohnehin bekannten festen Satz an, nie den tatsächlichen
+  Day-Ahead-Verlauf der Strombörse.
+* Der Preis-Trigger dieses Controllers (`currentPrice < 0`) konnte praktisch
+  **nie** auslösen, da der Wert nie unter `0,0` fiel, sondern in negativen
+  Stunden exakt bei `0,0` landete.
+
+Der eigentliche Marktpreis steckt in `EntsoeMarketPriceProvider`
+(`io.openems.edge.timeofusetariff.entsoe`), auf den `Tariff.Manual.EEG2025.GridSell`
+intern selbst zugreift, ohne ihn nach außen zu geben. Dieser Controller holt
+sich daher jetzt direkt eine eigene `EntsoeMarketPriceProvider`-Instanz über
+`EntsoeMarketPriceProviderPool` (Bidding Zone + Security Token als eigene
+Config-Felder). Der Pool dedupliziert nach (Bidding Zone, Token): trägt man
+hier dieselben Werte wie bei einer ggf. weiterhin vorhandenen
+`Tariff.Manual`-Komponente ein, wird intern dieselbe, bereits laufende
+ENTSO-E-Abfrage wiederverwendet - kein doppelter API-Zugriff.
+
+Da in dieser Installation `Tariff.Manual.EEG2025.GridSell` sonst keinen
+weiteren Verwender hat, kann diese Komponente entfallen, sobald dieser
+Controller umgestellt ist.
+
+**Security Token nur einmalig einsehbar**: Die ENTSO-E Transparency Platform
+zeigt ein generiertes Security Token nur zum Erzeugungszeitpunkt an, ein
+späteres erneutes Anzeigen ist im Portal nicht möglich (nur Neu-Generieren,
+was das alte Token ungültig macht). Token also beim Erzeugen sofort sicher
+notieren.
+
+== Live-Ansicht: Day-Ahead-Preis inkl. heute noch bevorstehender Stunden
+
+Die History-Seite (Kachel + Chart, siehe UI-Struktur unten) kann grundsätzlich
+nur bereits vergangene, historisierte Werte zeigen (`queryHistoricTimeseriesData`
+fragt Rrd4j ab, das nur Vergangenheit kennt) - selbst wenn der Rest des
+heutigen Tages im Day-Ahead-Preis schon bekannt ist, taucht er dort nie auf.
+
+Für "Vergangenheit + bereits bekannte Zukunft in einem Chart" gibt es daher
+zusätzlich eine **Live-Ansicht**-Kachel mit Modal (analog zu
+`Controller.Ess.Time-Of-Use-Tariff`s "Aktueller Fahrplan"-Chart,
+`powerSocChart.ts`). Anders als beim Vorbild wird dafür aber **nicht** an
+`EnergyScheduleHandler`/`EnergyScheduler` angedockt - dieser Mechanismus ist
+eng an das zentrale LP-/genetischer-Algorithmus-Optimierungsframework
+gekoppelt (`simulate()`, `Fitness`, `applySchedule()` etc.), gedacht für
+Controller, die einen eigenen Ladeplan berechnen lassen. Hier gibt es aber
+nichts zu optimieren, nur eine bereits bekannte Preiskurve anzuzeigen - das
+wäre ein unpassend schwerer Hammer gewesen.
+
+Stattdessen implementiert `ForecastChargeWindowImpl` direkt `ComponentJsonApi`
+und registriert eine eigene, schlanke JSON-RPC-Route
+(`getDayAheadGridSellPrices`, siehe `jsonrpc/GetDayAheadGridSellPricesEndpoint.java`),
+die einfach den aktuell im Speicher gehaltenen ENTSO-E-Preisverlauf
+(`EntsoeMarketPriceProvider.getMarketPrices().getValue()`) unverändert als
+Liste von `(Zeitpunkt, Preis in EUR/MWh)`-Punkten zurückgibt - keine
+Optimierung, keine Persistierung, nur ein dünner Wrapper um Daten, die
+ohnehin schon im Speicher liegen. Die Live-Ansicht-Komponente
+(`ui/.../edge/live/Controller/Ess/ForecastChargeWindow/modal/priceChart.ts`)
+ruft diese Route beim Öffnen des Modals per `ComponentJsonApiRequest` ab und
+zeichnet die bereits vergangenen Viertelstunden als durchgezogene, die noch
+bevorstehenden als gestrichelte Linie - derselbe visuelle Trick wie bei
+`powerSocChart.ts`.
 
 == Diagnose-Channels
 
@@ -127,6 +199,16 @@ gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
   negativ ist.
 * `CurrentlyBlocked` - `true`, wenn der Ziel-Controller aktuell tatsächlich
   auf `blockedMaxChargePower` steht (kombiniertes Ergebnis).
+* `NegativePriceDuration` - kumulierte Sekunden, in denen der
+  Börsen-Verkaufspreis negativ war (in Zeiten negativer Preise wird ja keine
+  Einspeisevergütung gezahlt). Anders als die übrigen Diagnose-Channels wird
+  dieser über `CalculateActiveTime` (Standard-OpenEMS-Utility, siehe z. B.
+  `Controller.Io.HeatingElement`) **historisiert**, sofern ein `Timedata`-
+  Provider (z. B. `Timedata.Rrd4j`) konfiguriert ist - abfragbar/darstellbar
+  in der History-Ansicht bzw. per `queryHistoricTimeseriesData`, z. B.
+  aggregiert als Stunden/Tag oder Stunden/Woche. Ohne konfigurierten
+  `Timedata`-Provider bleibt der Channel einfach `undefined` (fail-safe,
+  kein Fehler).
 
 == Bekannte Einschränkungen
 

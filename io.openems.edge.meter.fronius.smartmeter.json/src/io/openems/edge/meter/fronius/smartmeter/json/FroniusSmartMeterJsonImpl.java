@@ -196,6 +196,11 @@ public class FroniusSmartMeterJsonImpl extends AbstractOpenemsComponent
 	 * Integer. Returns {@code null} if the member is missing or JSON-null (which
 	 * Fronius does for channels that are not applicable, e.g. on single-phase
 	 * meters Phase_2/Phase_3 might be absent).
+	 *
+	 * @param data   the JSON object to read from
+	 * @param member the member name to read
+	 * @param factor the factor to multiply the read value with
+	 * @return the scaled value, or {@code null} if the member is missing
 	 */
 	private static Integer scaleToInt(JsonObject data, String member, float factor) {
 		var value = getFloatOrNull(data, member);

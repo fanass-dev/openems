@@ -198,6 +198,8 @@ public class OpenDtuPvInverterJsonImpl extends AbstractOpenemsComponent
 	 * Aggregate mode: sum of ALL inverters connected to this OpenDTU, from the
 	 * response's {@code total} object. No AC Voltage/Current/Frequency are
 	 * available at this level.
+	 *
+	 * @param root the root {@link JsonElement} of the OpenDTU status response
 	 */
 	private void processAggregate(JsonElement root) {
 		var power = getFloat(root, "total", "Power", "v");
@@ -225,6 +227,8 @@ public class OpenDtuPvInverterJsonImpl extends AbstractOpenemsComponent
 	 * totals, as opposed to the per-DC-string counters under {@code DC["0"]}
 	 * .. {@code DC["3"]} which this Component does not read). Only phase/string
 	 * index {@code "0"} is read - see class Javadoc.
+	 *
+	 * @param root the root {@link JsonElement} of the OpenDTU status response
 	 */
 	private void processSingleInverter(JsonElement root) {
 		var acPower = getFloat(root, "AC", "0", "Power", "v");
@@ -252,6 +256,10 @@ public class OpenDtuPvInverterJsonImpl extends AbstractOpenemsComponent
 	 * path (or the root itself if it already is one and {@code path} is empty).
 	 * Returns {@link Optional#empty()} at any point where a member is missing,
 	 * not an object, or JSON-null - never throws.
+	 *
+	 * @param root the root {@link JsonElement} to start walking from
+	 * @param path the chain of member names to walk down
+	 * @return the resolved {@link JsonObject}, or {@link Optional#empty()}
 	 */
 	private static Optional<JsonObject> getObj(JsonElement root, String... path) {
 		var current = JsonUtils.getAsOptionalJsonObject(root);
@@ -268,6 +276,11 @@ public class OpenDtuPvInverterJsonImpl extends AbstractOpenemsComponent
 	 * {@code root.total.Power.v}. Returns {@link Optional#empty()} at any point
 	 * where a member is missing, not an object (except the last step), or
 	 * JSON-null - never throws.
+	 *
+	 * @param root the root {@link JsonElement} to start walking from
+	 * @param path the chain of member names to walk down, e.g.
+	 *             {@code "total", "Power", "v"}
+	 * @return the resolved value, or {@link Optional#empty()}
 	 */
 	private static Optional<Float> getFloat(JsonElement root, String... path) {
 		if (path.length == 0) {
@@ -278,7 +291,13 @@ public class OpenDtuPvInverterJsonImpl extends AbstractOpenemsComponent
 		return getObj(root, parentPath).flatMap(o -> JsonUtils.getAsOptionalFloat(o, lastMember));
 	}
 
-	/** Same as {@link #getFloat}, but for a Boolean leaf member. */
+	/**
+	 * Same as {@link #getFloat}, but for a Boolean leaf member.
+	 *
+	 * @param root the root {@link JsonElement} to start walking from
+	 * @param path the chain of member names to walk down
+	 * @return the resolved value, or {@link Optional#empty()}
+	 */
 	private static Optional<Boolean> getBool(JsonElement root, String... path) {
 		if (path.length == 0) {
 			return Optional.empty();

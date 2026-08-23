@@ -1,10 +1,13 @@
 package io.openems.edge.controller.ess.forecastchargewindow;
 
+import io.openems.common.channel.PersistencePriority;
 import io.openems.common.channel.Unit;
 import io.openems.common.types.OpenemsType;
 import io.openems.edge.common.channel.BooleanReadChannel;
 import io.openems.edge.common.channel.Doc;
+import io.openems.edge.common.channel.DoubleReadChannel;
 import io.openems.edge.common.channel.IntegerReadChannel;
+import io.openems.edge.common.channel.LongReadChannel;
 import io.openems.edge.common.channel.StringReadChannel;
 import io.openems.edge.common.channel.value.Value;
 import io.openems.edge.common.component.OpenemsComponent;
@@ -21,9 +24,23 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 		FORECAST_LIFTED_TODAY(Doc.of(OpenemsType.BOOLEAN) //
 				.text("true, wenn die heutige Prognose-Pruefung den Block fuer den Rest des Tages aufgehoben hat")), //
 		PRICE_CURRENTLY_NEGATIVE(Doc.of(OpenemsType.BOOLEAN) //
-				.text("true, wenn der aktuelle Boersen-Verkaufspreis (TariffManager) negativ ist")), //
+				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis (ENTSO-E) negativ ist")), //
+		WITHIN_TIME_WINDOW(Doc.of(OpenemsType.BOOLEAN) //
+				.text("true, wenn 'jetzt' innerhalb eines im JSCalendar konfigurierten Blockier-Zeitfensters "
+						+ "liegt - unabhaengig davon, ob Prognose/Preis die Blockade gerade aufheben")), //
 		CURRENTLY_BLOCKED(Doc.of(OpenemsType.BOOLEAN) //
-				.text("true, wenn der Ziel-Controller aktuell auf 'Ladeleistung waehrend Blockierung' steht")); //
+				.text("true, wenn aktuell tatsaechlich 'Ladeleistung waehrend Blockierung' als Power-Constraint "
+						+ "gesetzt ist")), //
+		NEGATIVE_PRICE_DURATION(Doc.of(OpenemsType.LONG) //
+				.unit(Unit.CUMULATED_SECONDS) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Kumulierte Zeit, in der der Boersen-Verkaufspreis negativ war - historisierbar, "
+						+ "z. B. als Stunden/Tag oder Stunden/Woche in der History-Ansicht auswertbar")), //
+		CURRENT_GRID_SELL_PRICE(Doc.of(OpenemsType.DOUBLE) //
+				.unit(Unit.MONEY_PER_MEGAWATT_HOUR) //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("Aktueller Day-Ahead-Boersenpreis (ENTSO-E) fuer die laufende Viertelstunde - "
+						+ "historisiert, um den Preisverlauf in der History-Ansicht darstellen zu koennen"));
 
 		private final Doc doc;
 
@@ -122,6 +139,24 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 	}
 
 	/**
+	 * Gets the Channel for {@link ChannelId#WITHIN_TIME_WINDOW}.
+	 *
+	 * @return the Channel
+	 */
+	public default BooleanReadChannel getWithinTimeWindowChannel() {
+		return this.channel(ChannelId.WITHIN_TIME_WINDOW);
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on {@link ChannelId#WITHIN_TIME_WINDOW}.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setWithinTimeWindow(boolean value) {
+		this.getWithinTimeWindowChannel().setNextValue(value);
+	}
+
+	/**
 	 * Gets the Channel for {@link ChannelId#CURRENTLY_BLOCKED}.
 	 *
 	 * @return the Channel
@@ -137,5 +172,33 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 	 */
 	public default void _setCurrentlyBlocked(boolean value) {
 		this.getCurrentlyBlockedChannel().setNextValue(value);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#NEGATIVE_PRICE_DURATION}.
+	 *
+	 * @return the Channel
+	 */
+	public default LongReadChannel getNegativePriceDurationChannel() {
+		return this.channel(ChannelId.NEGATIVE_PRICE_DURATION);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#CURRENT_GRID_SELL_PRICE}.
+	 *
+	 * @return the Channel
+	 */
+	public default DoubleReadChannel getCurrentGridSellPriceChannel() {
+		return this.channel(ChannelId.CURRENT_GRID_SELL_PRICE);
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#CURRENT_GRID_SELL_PRICE}.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setCurrentGridSellPrice(Double value) {
+		this.getCurrentGridSellPriceChannel().setNextValue(value);
 	}
 }

@@ -242,6 +242,49 @@ public class JSCalendarTest {
 	}
 
 	@Test
+	public void testTasks_getActiveOneTask_realWorldMultiYearConfig() throws OpenemsNamedException {
+		var json = "["
+				+ "{ \"@type\": \"Task\", \"start\": \"2026-05-01T00:00:00\", \"duration\": \"PT12H\","
+				+ "  \"recurrenceRules\": [{ \"frequency\": \"daily\", \"until\": \"2026-09-30\" }] },"
+				+ "{ \"@type\": \"Task\", \"start\": \"2027-05-01T00:00:00\", \"duration\": \"PT12H\","
+				+ "  \"recurrenceRules\": [{ \"frequency\": \"daily\", \"until\": \"2027-09-30\" }] }"
+				+ "]";
+		var clock = new io.openems.common.test.TimeLeapClock(
+				ZonedDateTime.of(2026, 8, 10, 0, 0, 0, 0, java.time.ZoneOffset.UTC));
+		var tasks = Tasks.fromStringOrEmpty(clock, json);
+
+		for (var day = 0; day < 6; day++) {
+			for (var minuteOfDay = 0; minuteOfDay < 24 * 60; minuteOfDay += 15) {
+				var expectActive = minuteOfDay < 12 * 60;
+				var active = tasks.getActiveOneTask() != null;
+				assertEquals("at " + clock.now(), expectActive, active);
+				clock.leap(15, MINUTES);
+			}
+		}
+	}
+
+	@Test
+	public void testTasks_getActiveOneTask_midnightStartDailyWindow() throws OpenemsNamedException {
+		var clock = createDummyClock();
+		var tasks = JSCalendar.Tasks.<Void>create() //
+				.setClock(clock) //
+				.add(t -> t //
+						.setStart(LocalDateTime.of(2020, 1, 1, 0, 0)) //
+						.setDuration(Duration.ofHours(12)) //
+						.addRecurrenceRule(b -> b.setFrequency(DAILY))) //
+				.build();
+
+		for (var day = 0; day < 4; day++) {
+			for (var minuteOfDay = 0; minuteOfDay < 24 * 60; minuteOfDay += 15) {
+				var expectActive = minuteOfDay < 12 * 60;
+				var active = tasks.getActiveOneTask() != null;
+				assertEquals("day " + day + ", minute " + minuteOfDay, expectActive, active);
+				clock.leap(15, MINUTES);
+			}
+		}
+	}
+
+	@Test
 	public void testTasks_getOneTasksBetween() throws OpenemsNamedException {
 		{
 			var clock = createDummyClock();

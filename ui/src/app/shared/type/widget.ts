@@ -33,6 +33,7 @@ export enum WidgetFactory {
     "Controller.Clever-PV",
     "Controller.Ess.DelayedSellToGrid",
     "Controller.Ess.FixActivePower",
+    "Controller.Ess.ForecastChargeWindow",
     "Controller.Ess.GridOptimizedCharge",
     "Controller.Ess.Time-Of-Use-Tariff.Discharge",
     "Controller.Ess.Time-Of-Use-Tariff",

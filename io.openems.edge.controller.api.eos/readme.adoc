@@ -1,0 +1,98 @@
+= Controller Api Eos Measurement
+
+Nicht Teil des offiziellen OpenEMS-Projekts (custom Bundle dieser Installation).
+
+== Zweck
+
+Liest periodisch kumulierte Energiezaehlerstaende sowie die aktuelle
+Batterieleistung/-SoC aus `_sum` und schickt sie ueber eine referenzierte
+`Bridge.Eos`-Instanz an ein
+https://github.com/Akkudoktor-EOS/EOS[Akkudoktor-EOS]-System. Die
+"Intelligenz" (welcher Kanal zu welchem EOS-Key gehoert) sitzt bewusst hier,
+nicht in der Bridge - siehe `io.openems.edge.bridge.eos/readme.adoc`.
+
+== Kanal-Zuordnung
+
+=== Energiezaehlerstaende (EMR, kumuliert, kWh)
+
+[cols="1,1,1"]
+|===
+|Config-Feld |OpenEMS-Quelle |Entspricht in EOS' MeasurementCommonSettings
+
+|PV-Produktion Key |`_sum/ProductionActiveEnergy` |Eintrag in `pv_production_emr_keys`
+|Verbrauch Key |`_sum/ConsumptionActiveEnergy` |Eintrag in `load_emr_keys`
+|Netzbezug Key |`_sum/GridBuyActiveEnergy` |Eintrag in `grid_import_emr_keys`
+|Netzeinspeisung Key |`_sum/GridSellActiveEnergy` |Eintrag in `grid_export_emr_keys`
+|===
+
+Alle vier `_sum`-Kanaele sind in Wh_Σ (kumuliert), werden vor dem Senden
+durch 1000 geteilt (EOS erwartet kWh laut eigener Doku: *"Verwenden Sie
+ausschliesslich tatsaechliche Messwerte in kWh"*).
+
+=== Batterie (Momentanwerte, nicht kumuliert)
+
+[cols="1,1,1"]
+|===
+|Config-Feld |OpenEMS-Quelle |Entspricht in EOS' BatteriesCommonSettings
+
+|Batterie SoC Key |`_sum/EssSoc` (0..100 %, /100) |`measurement_key_soc_factor` [0.0..1.0]
+|Batterie Leistung L1 Key |`_sum/EssActivePowerL1` [W] |`measurement_key_power_l1_w`
+|Batterie Leistung L2 Key |`_sum/EssActivePowerL2` [W] |`measurement_key_power_l2_w`
+|Batterie Leistung L3 Key |`_sum/EssActivePowerL3` [W] |`measurement_key_power_l3_w`
+|Batterie Leistung symmetrisch Key |`_sum/EssActivePower` [W] |`measurement_key_power_3_phase_sym_w`
+|===
+
+Anders als die EMR-Keys sind das laut EOS-Quellcode
+(`src/akkudoktoreos/devices/devices.py`, `BatteriesCommonSettings`)
+**Momentanwerte in Watt**, keine kumulierten Zaehlerstaende - werden daher
+unveraendert (kein /1000) uebertragen, nur SoC wird von Prozent auf den
+EOS-Faktor [0.0..1.0] umgerechnet.
+
+**Vorzeichen-Konvention verifiziert** (manuell geprueft, siehe unten):
+OpenEMS definiert `EssActivePower`/`EssActivePowerL1-3` als *negativ beim
+Laden, positiv beim Entladen*. Im EOS-Quellcode war das nicht eindeutig
+dokumentiert (Kommentar dort nur "power the battery is charged or
+discharged with [W]", ohne Vorzeichen-Angabe) - daher wurde es empirisch
+geprueft, statt ungeprueft uebernommen (dieses Projekt hat mit genau dieser
+Art Vorzeichen-Bug schon mehrfach zu tun gehabt, siehe Fronius-Bundles):
+waehrend eines eindeutigen Entladevorgangs kam bei EOS ein **positiver**
+Wert an - identisch zur OpenEMS-Konvention. Keine Vorzeichenumkehr (`* -1`)
+noetig, der direkte Passthrough ist korrekt.
+
+**Wichtig**: Alle Key-Namen muessen exakt mit den Strings uebereinstimmen,
+die in der EOS-eigenen Konfiguration verwendet werden (per
+`GET /v1/measurement/keys` auf dem laufenden EOS-Server abfragbar). Die
+Standardwerte hier sind die tatsaechlich in dieser Installation ausgelesenen
+Keys - bei einer anderen EOS-Instanz ggf. anpassen. Der dort ebenfalls
+vorhandene `tesla_model_y_lr-*`-Key (EV-Werte) wird von dieser Komponente
+bewusst (noch) nicht bedient.
+
+== Push-Mechanik
+
+* `run()` wird jeden OpenEMS-Cycle aufgerufen (Controller-Standardverhalten),
+  zaehlt aber nur bis `pushEveryCycles` hoch und sendet erst dann - EOS
+  optimiert stundenweise, ein Push pro Sekunde waere unnoetige Last.
+* Nach Aktivierung/Config-Aenderung wird sofort (statt erst nach einem vollen
+  Intervall) gepusht.
+* Schreibzugriffe sind fire-and-forget (asynchron ueber `BridgeEos`) - ein
+  Fehlschlag wird geloggt und im `LastRequestFailed`-Channel der Bridge
+  sichtbar, aber nicht wiederholt; der naechste planmaessige Push ueberschreibt
+  den Wert ohnehin mit dem dann aktuellen Zaehlerstand.
+* Ist ein `_sum`-Kanal (noch) nicht verfuegbar (`null`), wird nur dieser eine
+  Key uebersprungen, nicht der ganze Zyklus (fail-safe).
+
+== Voraussetzungen
+
+* Eine aktive `Bridge.Eos`-Instanz (Component-ID passend in `Bridge-EOS-ID`
+  eingetragen).
+* Die vier Key-Namen muessen mit der EOS-Konfiguration abgeglichen sein
+  (siehe oben).
+
+== Bekannte Einschraenkungen / offene Punkte
+
+* Keine rueckwirkende Luecken-Auffuellung nach Edge-Neustart/-Downtime -
+  EOS bekommt nur den ab jetzt aktuellen Zaehlerstand, keine historischen
+  Zwischenwerte. Waere ueber `Timedata` nachruestbar, falls benoetigt.
+* Kein Support fuer `/v1/measurement/series`-Batch-Push - nur Einzelwerte
+  ueber `/v1/measurement/value`, da fuer ein periodisches Live-Update simpler
+  und ausreichend.
