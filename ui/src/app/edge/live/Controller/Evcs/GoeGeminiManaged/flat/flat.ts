@@ -29,16 +29,22 @@ export class FlatComponent extends AbstractFlatWidget {
     protected static readonly FORCE_3_PHASE = 2;
 
     protected currentPhaseControlMode: number | null = null;
+    /** Actually active phase count right now (1 or 3) - independent of the
+     * selected mode, e.g. while 'Automatic' is selected this is the only way
+     * to see whether it currently charges 1-phase or 3-phase. */
+    protected currentPhases: number | null = null;
     protected pending: boolean = false;
 
     protected override getChannelAddresses(): ChannelAddress[] {
         return [
             new ChannelAddress(this.component.id, "PhaseControlMode"),
+            new ChannelAddress(this.component.id, "Phases"),
         ];
     }
 
     protected override onCurrentData(currentData: CurrentData): void {
         this.currentPhaseControlMode = currentData.allComponents[this.component.id + "/PhaseControlMode"] ?? null;
+        this.currentPhases = currentData.allComponents[this.component.id + "/Phases"] ?? null;
     }
 
     protected setPhaseControlMode(mode: number) {

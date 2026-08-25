@@ -19,6 +19,7 @@ import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
 import org.osgi.service.component.annotations.ReferencePolicyOption;
+import org.osgi.service.cm.ConfigurationAdmin;
 import org.osgi.service.event.Event;
 import org.osgi.service.event.EventHandler;
 import org.osgi.service.event.propertytypes.EventTopics;
@@ -38,6 +39,7 @@ import io.openems.common.utils.JsonUtils;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleService;
 import io.openems.edge.bridge.http.cycle.HttpBridgeCycleServiceDefinition;
 import io.openems.edge.common.channel.IntegerReadChannel;
+import io.openems.edge.common.component.ComponentManager;
 import io.openems.edge.common.component.OpenemsComponent;
 import io.openems.edge.common.event.EdgeEventConstants;
 import io.openems.edge.common.sum.Sum;
@@ -96,6 +98,20 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 
 	@Reference
 	private Sum sum;
+
+	@Reference
+	private ComponentManager componentManager;
+
+	/**
+	 * Used only to read the {@code priority} config property of the
+	 * {@link Config#evcsControllerId()}-referenced {@code Controller.Evcs}
+	 * generically (see {@link #isCarPriority()}) - deliberately not a compile
+	 * dependency on {@code io.openems.edge.controller.evcs}, so there is no
+	 * separate 'priority' setting to keep in sync here: this always reflects
+	 * that Controller's own, single, live setting.
+	 */
+	@Reference
+	private ConfigurationAdmin cm;
 
 	@Reference
 	private BridgeHttpFactory httpBridgeFactory;
@@ -164,7 +180,14 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 				Math.round(config.maxHwCurrent() / 1000f) * Evcs.DEFAULT_VOLTAGE * Phases.THREE_PHASE.getValue());
 		// Safe default on every (re-)activation, e.g. after a restart - automatic
 		// phase-switching must always be explicitly (re-)selected, never assumed.
+		// Must ALSO actively (re-)send psm=1 here, not just update this Channel:
+		// otherwise, if the device was left on psm=2 (3-phase) from before the
+		// restart (e.g. a previous test run), it keeps charging 3-phase - the
+		// Channel would merely display 'Force 1-phase' without it being true,
+		// since nothing else re-asserts a value that isn't actually changing
+		// from this Component's own (freshly initialized) point of view.
 		this._setPhaseControlMode(PhaseControlMode.FORCE_1_PHASE);
+		this.requestPhaseSwitchMode(PSM_FORCE_1_PHASE);
 
 		this.httpBridge = this.httpBridgeFactory.get();
 		this.cycleService = this.httpBridge.createService(this.httpBridgeCycleServiceDefinition);
@@ -233,6 +256,7 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 		}
 
 		if (this.getPhaseControlMode() != PhaseControlMode.AUTOMATIC) {
+			this._setPhaseAutomaticLastDecision(null);
 			return;
 		}
 
@@ -240,30 +264,57 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 		// decision does not chase its own effect once a phase switch changes how
 		// much this Evcs itself draws (same idiom as elsewhere in this codebase,
 		// e.g. Controller.Ess.ArbitrageDischarge's gridPower+essPower trick).
-		var surplus = -this.sum.getGridActivePower().orElse(0) + this.getActivePower().orElse(0);
+		// Mirrors Controller.Evcs' own two surplus formulas (see isCarPriority()):
+		// under Car-priority, the Ess' current charge power is also available to
+		// the Evcs (it would otherwise go to the battery), under Storage-priority
+		// it is not.
+		var isCarPriority = this.isCarPriority();
+		var buyFromGrid = this.sum.getGridActivePower().orElse(0);
+		var evcsCharge = this.getActivePower().orElse(0);
+		var essDischarge = this.sum.getEssDischargePower().orElse(0);
+		var surplus = isCarPriority //
+				? evcsCharge - buyFromGrid - essDischarge //
+				: evcsCharge - buyFromGrid;
 		var threshold = this.config.phaseSwitchThresholdWatt();
 		var now = Instant.now();
 		var currentlyThreePhase = this.getPhasesAsInt() == 3;
 
+		String decision;
 		if (surplus >= threshold) {
 			this.switchDownConditionSince = null;
 			if (this.switchUpConditionSince == null) {
 				this.switchUpConditionSince = now;
 			}
-			if (!currentlyThreePhase && Duration.between(this.switchUpConditionSince, now)
-					.getSeconds() >= this.config.phaseSwitchUpDurationSeconds()) {
+			var waitedSeconds = Duration.between(this.switchUpConditionSince, now).getSeconds();
+			if (!currentlyThreePhase && waitedSeconds >= this.config.phaseSwitchUpDurationSeconds()) {
 				this.requestPhaseSwitchMode(PSM_FORCE_3_PHASE);
+				decision = "Ergebnis: Umschaltung auf 3-phasig angefordert";
+			} else if (currentlyThreePhase) {
+				decision = "Ergebnis: bereits 3-phasig";
+			} else {
+				decision = "Ergebnis: wartet auf Hochschalt-Dauer (" + waitedSeconds + "/"
+						+ this.config.phaseSwitchUpDurationSeconds() + " s)";
 			}
 		} else {
 			this.switchUpConditionSince = null;
 			if (this.switchDownConditionSince == null) {
 				this.switchDownConditionSince = now;
 			}
-			if (currentlyThreePhase && Duration.between(this.switchDownConditionSince, now)
-					.getSeconds() >= this.config.phaseSwitchDownDurationSeconds()) {
+			var waitedSeconds = Duration.between(this.switchDownConditionSince, now).getSeconds();
+			if (currentlyThreePhase && waitedSeconds >= this.config.phaseSwitchDownDurationSeconds()) {
 				this.requestPhaseSwitchMode(PSM_FORCE_1_PHASE);
+				decision = "Ergebnis: Umschaltung auf 1-phasig angefordert";
+			} else if (!currentlyThreePhase) {
+				decision = "Ergebnis: bereits 1-phasig";
+			} else {
+				decision = "Ergebnis: wartet auf Runterschalt-Dauer (" + waitedSeconds + "/"
+						+ this.config.phaseSwitchDownDurationSeconds() + " s)";
 			}
 		}
+
+		this._setPhaseAutomaticLastDecision("Prioritaet: " + (isCarPriority ? "Auto-Vorrang" : "Speicher-Vorrang")
+				+ "; Einspeisung: " + -buyFromGrid + " W; EV-Ladung: " + evcsCharge + " W; Speicher: "
+				+ -essDischarge + " W; Ueberschuss: " + surplus + " W (Schwelle " + threshold + " W); " + decision);
 	}
 
 	/**
@@ -278,6 +329,45 @@ public class EvcsGoeGeminiManagedImpl extends AbstractManagedEvcsComponent
 			this.getSetPhaseSwitchModeChannel().setNextWriteValue(psm);
 		} catch (OpenemsNamedException e) {
 			this.logWarn(this.log, "Konnte Phasenumschaltung nicht anfordern: " + e.getMessage());
+		}
+	}
+
+	/**
+	 * Reads whether {@link Config#evcsControllerId()} (the {@code Controller
+	 * .Evcs} managing this Evcs) is currently configured for
+	 * {@code Priority.CAR} ("Auto-Vorrang") - generically, via {@link #cm}
+	 * ({@link ConfigurationAdmin}) and the target's own
+	 * {@link OpenemsComponent#servicePid()}, so this Component reads that
+	 * Controller's single, actual setting directly instead of needing (and
+	 * risking disagreement with) a separate copy of the same choice here. Any
+	 * failure to resolve the Component/PID/property (e.g. misconfigured or
+	 * missing {@link Config#evcsControllerId()}) falls back to {@code false}
+	 * (Storage-priority formula) - the more conservative assumption, since it
+	 * never overestimates the surplus actually available to this Evcs.
+	 *
+	 * @return true if the referenced Controller.Evcs is set to car/EV priority
+	 */
+	private boolean isCarPriority() {
+		try {
+			var controllerId = this.config.evcsControllerId();
+			if (controllerId == null || controllerId.isBlank()) {
+				return false;
+			}
+			OpenemsComponent evcsController = this.componentManager.getComponent(controllerId);
+			var pid = evcsController.servicePid();
+			if (pid == null || pid.isBlank()) {
+				return false;
+			}
+			var properties = this.cm.getConfiguration(pid, "?").getProperties();
+			if (properties == null) {
+				return false;
+			}
+			var priority = properties.get("priority");
+			return priority != null && "CAR".equalsIgnoreCase(priority.toString());
+		} catch (Exception e) {
+			this.logWarn(this.log, "Konnte Lade-Prioritaet von '" + this.config.evcsControllerId()
+					+ "' nicht lesen, verwende sicherheitshalber Speicher-Vorrang-Formel: " + e.getMessage());
+			return false;
 		}
 	}
 

@@ -74,5 +74,15 @@ import org.osgi.service.metatype.annotations.ObjectClassDefinition;
 					+ "nicht sofort zum Zurueckschalten fuehren.")
 	int phaseSwitchDownDurationSeconds() default 600;
 
+	@AttributeDefinition(name = "Automatik: Controller.Evcs-ID (fuer Lade-Prioritaet)", //
+			description = "Nur relevant im Phasen-Steuerungsmodus 'Automatic'. Component-ID des "
+					+ "Controller.Evcs, der diese Wallbox steuert - dessen 'Priority'-Einstellung (Auto/Speicher) "
+					+ "wird live ausgelesen (keine eigene, separat zu pflegende Einstellung hier), um den "
+					+ "verfuegbaren PV-Ueberschuss richtig zu berechnen: bei Auto-Vorrang zaehlt eingespeiste "
+					+ "Leistung PLUS aktuelle Batterie-Ladeleistung, bei Speicher-Vorrang nur die eingespeiste "
+					+ "Leistung. Kann die referenzierte Komponente nicht gefunden/gelesen werden, wird "
+					+ "sicherheitshalber wie bei Speicher-Vorrang gerechnet.")
+	String evcsControllerId() default "ctrlEvcs0";
+
 	String webconsole_configurationFactory_nameHint() default "EVCS go-e Gemini Managed [{id}]";
 }

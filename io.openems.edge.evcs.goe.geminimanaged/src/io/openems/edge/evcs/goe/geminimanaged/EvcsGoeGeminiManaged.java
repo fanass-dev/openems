@@ -53,7 +53,10 @@ public interface EvcsGoeGeminiManaged extends ManagedEvcs, Evcs, OpenemsComponen
 				.text("Setzt den Phasen-Steuerungsmodus. Diese Komponente ist die einzige Stelle, die "
 						+ "tatsaechlich SET_PHASE_SWITCH_MODE beschreibt - bei 'Force 1-phase'/'Force 3-phase' "
 						+ "wird das sofort einmalig umgesetzt, bei 'Automatic' jeden Cycle neu anhand von "
-						+ "PV-Ueberschuss und den konfigurierten Hysterese-Zeiten entschieden."));
+						+ "PV-Ueberschuss und den konfigurierten Hysterese-Zeiten entschieden.")), //
+		PHASE_AUTOMATIC_LAST_DECISION(Doc.of(OpenemsType.STRING) //
+				.text("Nur im Modus 'Automatic' aktuell: Klartext-Beschreibung des zuletzt berechneten "
+						+ "Ueberschusses (inkl. verwendeter Prioritaets-Formel) und der Hysterese-Entscheidung"));
 
 		private final Doc doc;
 
@@ -219,5 +222,24 @@ public interface EvcsGoeGeminiManaged extends ManagedEvcs, Evcs, OpenemsComponen
 	 */
 	public default WriteChannel<Integer> getSetPhaseControlModeChannel() {
 		return this.channel(ChannelId.SET_PHASE_CONTROL_MODE);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#PHASE_AUTOMATIC_LAST_DECISION}.
+	 *
+	 * @return the Channel
+	 */
+	public default StringReadChannel getPhaseAutomaticLastDecisionChannel() {
+		return this.channel(ChannelId.PHASE_AUTOMATIC_LAST_DECISION);
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#PHASE_AUTOMATIC_LAST_DECISION}.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setPhaseAutomaticLastDecision(String value) {
+		this.getPhaseAutomaticLastDecisionChannel().setNextValue(value);
 	}
 }

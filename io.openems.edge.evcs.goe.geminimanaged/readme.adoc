@@ -184,6 +184,36 @@ der Komponente (auch nach einem Neustart), nicht nur beim allerersten Mal.
 Automatische Umschaltung muss explizit ueber die Live-Kachel aktiviert
 werden.
 
+=== Lade-Prioritaet (`Controller.Evcs`) wird beim Ueberschuss beruecksichtigt
+
+Ein einfaches "Netzleistung minus Wallbox-Eigenverbrauch" als Ueberschuss
+reicht nicht: `Controller.Evcs` hat selbst eine `Priority`-Einstellung
+(`Auto`/`Speicher`), die bestimmt, ob PV-Ueberschuss primaer ins EV oder in
+den Speicher fliesst. Bei Speicher-Vorrang ist "eingespeiste Leistung" die
+richtige Groesse; bei Auto-Vorrang wuerde das die tatsaechlich fuers EV
+verfuegbare Leistung unterschaetzen, weil die Batterie-Ladeleistung dabei
+nicht mitgezaehlt wird - genau das Symptom, das den ersten Testlauf dieser
+Automatik ausgebremst hat (genug PV fuer 3-phasig, Prioritaet stand auf
+Auto-Vorrang, trotzdem lief der groessere Teil in den Speicher).
+
+`isCarPriority()` liest deshalb, welche Formel gilt - **nicht** ueber eine
+zweite, separat zu pflegende Einstellung in diesem Bundle (Risiko: beide
+Schalter laufen auseinander), sondern **live** von der tatsaechlichen
+`Controller.Evcs`-Instanz (`Config#evcsControllerId()`, Default
+`ctrlEvcs0`) via `ConfigurationAdmin` - generisch ueber
+`OpenemsComponent#servicePid()` und `getConfiguration(pid, "?")
+.getProperties().get("priority")`, keine Compile-Abhaengigkeit auf
+`io.openems.edge.controller.evcs`. Es gibt dadurch nur eine einzige Quelle
+der Wahrheit. Schlaegt das Lesen fehl (falsche/leere Component-ID,
+Komponente nicht gefunden, o. ae.), wird sicherheitshalber wie bei
+Speicher-Vorrang gerechnet (unterschaetzt den Ueberschuss im Zweifel,
+statt ihn zu ueberschaetzen).
+
+Die beiden Formeln entsprechen exakt `ControllerEvcsImpl`s eigenen
+(`calculateChargePowerFromExcessPower`/`calculateExcessPowerAfterEss`),
+nur ohne dessen 200-W-Puffer und ohne die dortige SOC>97%-Sonderregel
+(vereinfachend bewusst weggelassen, siehe Chatverlauf).
+
 **Falsches Feld korrigiert**: Frühere Version dieser readme.adoc nannte `psh`
 als (fehlendes) Phasenumschaltungsfeld - das war ungenau. `psh` ist nur die
 Hysterese-Einstellung [W] für die geräteeigene Automatik. Das eigentliche
@@ -210,7 +240,11 @@ bestätigter Wert), `ModelStatus` (Rohwert des go-e-Feldes `modelStatus` -
 Diagnose, warum gerade (nicht) geladen wird, z. B. während des kurzen
 Phasenwechsel-Unterbruchs), `PhaseControlMode`/`SetPhaseControlMode`
 (OpenEMS-seitiger Steuerungsmodus, siehe oben - das ist der Kanal, den die
-Live-Kachel tatsächlich beschreibt).
+Live-Kachel tatsächlich beschreibt), `PhaseAutomaticLastDecision`
+(String, nur im Modus `Automatic` gefüllt - zeigt Prioritäts-Formel,
+Einspeisung/EV-Ladung/Speicher-Leistung, berechneten Überschuss,
+Schwellwert und Hysterese-Status im Klartext; `null` in den beiden
+Force-Modi).
 
 **Eigene Live-Kachel statt der geteilten Evcs-Kachel**: Die normale
 Live-Ansicht-Kachel für EVCS-Komponenten (`Controller_Evcs`) ist in OpenEMS

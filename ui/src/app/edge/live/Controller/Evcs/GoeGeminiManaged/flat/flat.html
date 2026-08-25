@@ -20,5 +20,12 @@
         </ion-button>
       </ion-col>
     </ion-row>
+    @if (currentPhaseControlMode === 0 && currentPhases) {
+      <ion-row class="ion-justify-content-center">
+        <ion-col size="12" class="ion-text-center">
+          <ion-note>Automatik lädt aktuell {{ currentPhases }}-phasig</ion-note>
+        </ion-col>
+      </ion-row>
+    }
   </oe-flat-widget>
 }
