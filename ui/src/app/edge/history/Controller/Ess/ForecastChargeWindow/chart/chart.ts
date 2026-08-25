@@ -2,6 +2,7 @@
 import { ChangeDetectorRef, Component } from "@angular/core";
 import { ActivatedRoute } from "@angular/router";
 import { TranslateService } from "@ngx-translate/core";
+import * as Chart from "chart.js";
 import { calculateResolution, ChronoUnit, Resolution } from "src/app/edge/history/shared";
 import { AbstractHistoryChart } from "src/app/shared/components/chart/abstracthistorychart";
 import { ChartConstants } from "src/app/shared/components/chart/chart.constants";
@@ -78,6 +79,7 @@ export class ChartComponent extends AbstractHistoryChart {
 
                 const displayValues = AbstractHistoryChart.fillChart(this.chartType, this.chartObject, dataResponse);
                 this.datasets = displayValues.datasets;
+                this.colorizeNegativePrices(this.datasets[0]);
                 this.legendOptions = displayValues.legendOptions;
                 this.labels = displayValues.labels;
                 this.setChartLabel();
@@ -95,5 +97,24 @@ export class ChartComponent extends AbstractHistoryChart {
                 this.options.scales.x["offset"] = false;
                 this.options["animation"] = false;
             });
+    }
+
+    /**
+     * The shared fillChart()/AbstractHistoryChart.getColors() pipeline only
+     * supports one static color per dataset (getChartData()'s 'color'
+     * field) - override it here with one color per bar (Chart.js accepts a
+     * color array indexed like the data array), red for negative day-ahead
+     * prices and the usual green otherwise, matching the Live-page's
+     * day-ahead price chart (priceChart.ts).
+     */
+    private colorizeNegativePrices(dataset: Chart.ChartDataset) {
+        if (!dataset?.data) {
+            return;
+        }
+        const green = AbstractHistoryChart.getColors("rgb(51,102,0)", this.chartType);
+        const red = AbstractHistoryChart.getColors("rgb(200,30,30)", this.chartType);
+        const data = dataset.data as (number | null)[];
+        dataset.backgroundColor = data.map(value => value != null && value < 0 ? red.backgroundColor : green.backgroundColor);
+        dataset.borderColor = data.map(value => value != null && value < 0 ? red.borderColor : green.borderColor);
     }
 }

@@ -98,8 +98,21 @@ export class PriceChartComponent extends AbstractHistoryChart {
         const now = Date.now();
         const pastData: (number | null)[] = [];
         const futureData: (number | null)[] = [];
+        // Per-bar colors (Chart.js accepts one color per data point, not just one
+        // for the whole dataset) - red for negative prices, the usual green
+        // otherwise, at the same opacity already used to distinguish past/future.
+        const pastBackgroundColor: string[] = [];
+        const pastBorderColor: string[] = [];
+        const futureBackgroundColor: string[] = [];
+        const futureBorderColor: string[] = [];
 
         points.forEach((point, i) => {
+            const negative = point.price < 0;
+            // Chart.js indexes a per-point color array by the same index as the
+            // data array, so both arrays need one entry per point regardless of
+            // which of the two (mutually-exclusive, null-padded) series is
+            // actually active at that index - the color for the null slot is
+            // simply never drawn.
             if (point.time.getTime() <= now) {
                 pastData.push(priceInCentPerKwh[i]);
                 futureData.push(null);
@@ -107,6 +120,10 @@ export class PriceChartComponent extends AbstractHistoryChart {
                 pastData.push(null);
                 futureData.push(priceInCentPerKwh[i]);
             }
+            pastBackgroundColor.push(negative ? "rgba(200,30,30,0.8)" : "rgba(51,102,0,0.8)");
+            pastBorderColor.push(negative ? "rgb(200,30,30)" : "rgb(51,102,0)");
+            futureBackgroundColor.push(negative ? "rgba(200,30,30,0.35)" : "rgba(51,102,0,0.35)");
+            futureBorderColor.push(negative ? "rgba(200,30,30,0.35)" : "rgba(51,102,0,0.35)");
         });
 
         const label = this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE");
@@ -115,17 +132,24 @@ export class PriceChartComponent extends AbstractHistoryChart {
                 type: "bar",
                 label: label,
                 data: pastData,
-                backgroundColor: "rgba(51,102,0,0.8)",
-                borderColor: "rgb(51,102,0)",
+                backgroundColor: pastBackgroundColor,
+                borderColor: pastBorderColor,
                 stack: "price",
+                // Required for getYAxisOptions()'s dynamicScale min/max calculation
+                // (matches datasets to a yAxis by this field) and for Chart.js
+                // itself to plot against the 'left' ct-scale below, rather than an
+                // implicit default axis - normally set automatically by fillChart()
+                // for History-page charts, but this one builds datasets manually.
+                yAxisID: ChartAxis.LEFT,
             },
             {
                 type: "bar",
                 label: label,
                 data: futureData,
-                backgroundColor: "rgba(51,102,0,0.35)",
-                borderColor: "rgba(51,102,0,0.35)",
+                backgroundColor: futureBackgroundColor,
+                borderColor: futureBorderColor,
                 stack: "price",
+                yAxisID: ChartAxis.LEFT,
             },
         ];
 
