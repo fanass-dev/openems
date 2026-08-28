@@ -6,14 +6,32 @@
     <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.LAST_DECISION' | translate"
       [value]="lastDecision" style="font-size: small;"></oe-modal-line>
     <oe-modal-horizontal-line></oe-modal-horizontal-line>
-    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_1H_AHEAD' | translate"
-      [value]="prediction1hAhead"></oe-modal-line>
-    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_3H_AHEAD' | translate"
-      [value]="prediction3hAhead"></oe-modal-line>
-    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_6H_AHEAD' | translate"
-      [value]="prediction6hAhead"></oe-modal-line>
-    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_12H_AHEAD' | translate"
-      [value]="prediction12hAhead"></oe-modal-line>
+    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.CURRENT_PRODUCTION' | translate"
+      [value]="currentProduction"></oe-modal-line>
+    <ion-item lines="none">
+      <table style="width: 100%;" class="ion-text-center">
+        <tr>
+          <td style="text-align: left; padding: 6px 4px;">
+            <strong>{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TABLE_TITLE' | translate }}</strong>
+          </td>
+          @for (column of predictionColumns; track column.hours) {
+            <td style="padding: 6px 4px;"><strong>{{ column.hours }}h</strong></td>
+          }
+        </tr>
+        <tr>
+          <td style="text-align: left; padding: 6px 4px;">{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.ROW_AHEAD' | translate }}</td>
+          @for (column of predictionColumns; track column.hours) {
+            <td style="padding: 6px 4px;">{{ column.ahead }}</td>
+          }
+        </tr>
+        <tr>
+          <td style="text-align: left; padding: 6px 4px;">{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.ROW_REALIZED' | translate }}</td>
+          @for (column of predictionColumns; track column.hours) {
+            <td style="padding: 6px 4px;">{{ column.realized }}</td>
+          }
+        </tr>
+      </table>
+    </ion-item>
     <oe-modal-horizontal-line></oe-modal-horizontal-line>
     <oe-modal-info-line
       [info]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.CHART_TITLE' | translate"></oe-modal-info-line>

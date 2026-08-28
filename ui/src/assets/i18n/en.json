@@ -543,10 +543,10 @@
                     "CHART_TITLE": "Day-ahead price today",
                     "BLOCKED": "Block active",
                     "UNBLOCKED": "Block lifted",
-                    "PREDICTION_1H_AHEAD": "PV forecast in 1h",
-                    "PREDICTION_3H_AHEAD": "PV forecast in 3h",
-                    "PREDICTION_6H_AHEAD": "PV forecast in 6h",
-                    "PREDICTION_12H_AHEAD": "PV forecast in 12h"
+                    "CURRENT_PRODUCTION": "Currently measured",
+                    "TABLE_TITLE": "Forecast",
+                    "ROW_AHEAD": "Ahead",
+                    "ROW_REALIZED": "Realized"
                 },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Activate charge from the grid",
