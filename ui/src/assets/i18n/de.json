@@ -531,7 +531,11 @@
                     "LAST_DECISION": "Letzte Entscheidung",
                     "CHART_TITLE": "Day-Ahead-Preis heute",
                     "BLOCKED": "Block aktiv",
-                    "UNBLOCKED": "Block aufgehoben"
+                    "UNBLOCKED": "Block aufgehoben",
+                    "PREDICTION_1H_AHEAD": "PV-Prognose in 1h",
+                    "PREDICTION_3H_AHEAD": "PV-Prognose in 3h",
+                    "PREDICTION_6H_AHEAD": "PV-Prognose in 6h",
+                    "PREDICTION_12H_AHEAD": "PV-Prognose in 12h"
                 },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Aktive Beladung aus dem Netz aktivieren",

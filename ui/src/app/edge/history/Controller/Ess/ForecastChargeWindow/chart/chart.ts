@@ -39,32 +39,58 @@ export class ChartComponent extends AbstractHistoryChart {
                     name: "GridSellPrice",
                     powerChannel: ChannelAddress.fromString(this.component.id + "/CurrentGridSellPrice"),
                 },
+                {
+                    name: "CurrentlyBlocked",
+                    powerChannel: ChannelAddress.fromString(this.component.id + "/CurrentlyBlocked"),
+                },
             ],
             output: (data: HistoryUtils.ChannelData) => {
-                return [{
-                    name: this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE") + " (Ct/kWh)",
-                    // fillChart() divides every channel value by 1000 (built for Watt -> kW),
-                    // which does not apply to a currency channel - undo it (*1000), then convert
-                    // from the channel's EUR/MWh to the ct/kWh that YAxisType.CURRENCY assumes (/10).
-                    converter: () => data["GridSellPrice"]?.map(value => value == null ? null : value * 100),
-                    color: "rgb(51,102,0)",
-                    custom: {
-                        type: "bar",
-                        formatNumber: ChartConstants.NumberFormat.TWO,
+                return [
+                    {
+                        name: this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE") + " (Ct/kWh)",
+                        // fillChart() divides every channel value by 1000 (built for Watt -> kW),
+                        // which does not apply to a currency channel - undo it (*1000), then convert
+                        // from the channel's EUR/MWh to the ct/kWh that YAxisType.CURRENCY assumes (/10).
+                        converter: () => data["GridSellPrice"]?.map(value => value == null ? null : value * 100),
+                        color: "rgb(51,102,0)",
+                        custom: {
+                            type: "bar",
+                            formatNumber: ChartConstants.NumberFormat.TWO,
+                        },
                     },
-                }];
+                    {
+                        name: this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.BLOCKED"),
+                        // Same /1000-undo as above - CurrentlyBlocked is a boolean (0/1) channel,
+                        // not a power value, so fillChart()'s implicit Watt -> kW conversion has to
+                        // be reversed and the result thresholded back to a clean 0/1 for the
+                        // RELAY y-axis (On/Off ticks, see AbstractHistoryChart.getYAxisOptions).
+                        converter: () => data["CurrentlyBlocked"]?.map(value => value == null ? null : (value > 0 ? 1 : 0)),
+                        color: "rgb(200,30,30)",
+                        yAxisId: ChartAxis.RIGHT,
+                        custom: {
+                            type: "line",
+                        },
+                    },
+                ];
             },
             tooltip: {
                 formatNumber: ChartConstants.NumberFormat.TWO,
             },
-            yAxes: [{
-                unit: YAxisType.CURRENCY,
-                position: "left",
-                yAxisId: ChartAxis.LEFT,
-                scale: {
-                    dynamicScale: true,
+            yAxes: [
+                {
+                    unit: YAxisType.CURRENCY,
+                    position: "left",
+                    yAxisId: ChartAxis.LEFT,
+                    scale: {
+                        dynamicScale: true,
+                    },
                 },
-            }],
+                {
+                    unit: YAxisType.RELAY,
+                    position: "right",
+                    yAxisId: ChartAxis.RIGHT,
+                },
+            ],
         };
     }
 

@@ -6,6 +6,15 @@
     <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.LAST_DECISION' | translate"
       [value]="lastDecision" style="font-size: small;"></oe-modal-line>
     <oe-modal-horizontal-line></oe-modal-horizontal-line>
+    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_1H_AHEAD' | translate"
+      [value]="prediction1hAhead"></oe-modal-line>
+    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_3H_AHEAD' | translate"
+      [value]="prediction3hAhead"></oe-modal-line>
+    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_6H_AHEAD' | translate"
+      [value]="prediction6hAhead"></oe-modal-line>
+    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PREDICTION_12H_AHEAD' | translate"
+      [value]="prediction12hAhead"></oe-modal-line>
+    <oe-modal-horizontal-line></oe-modal-horizontal-line>
     <oe-modal-info-line
       [info]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.CHART_TITLE' | translate"></oe-modal-info-line>
     <forecastChargeWindowPriceChart class="ion-padding" [component]="component" [edge]="edge">

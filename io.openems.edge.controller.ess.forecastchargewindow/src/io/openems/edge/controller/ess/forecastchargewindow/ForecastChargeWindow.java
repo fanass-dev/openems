@@ -22,15 +22,23 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 				.unit(Unit.WATT_HOURS) //
 				.text("Zuletzt berechnete PV-Prognosesumme ab 'Beginn Nachmittagsfenster' bis Tagesende")), //
 		FORECAST_LIFTED_TODAY(Doc.of(OpenemsType.BOOLEAN) //
-				.text("true, wenn die heutige Prognose-Pruefung den Block fuer den Rest des Tages aufgehoben hat")), //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("true, wenn die heutige Prognose-Pruefung den Block fuer den Rest des Tages aufgehoben hat - "
+						+ "historisiert, um nachtraeglich pruefen zu koennen, ob die Prognose an einem bestimmten "
+						+ "Tag ursaechlich fuer eine vorzeitige Aufhebung war")), //
 		PRICE_CURRENTLY_NEGATIVE(Doc.of(OpenemsType.BOOLEAN) //
-				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis (ENTSO-E) negativ ist")), //
+				.persistencePriority(PersistencePriority.HIGH) //
+				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis (ENTSO-E) negativ ist - historisiert, um "
+						+ "nachtraeglich pruefen zu koennen, ob ein negativer Preis zu einem bestimmten Zeitpunkt "
+						+ "ursaechlich fuer eine Aufhebung war")), //
 		WITHIN_TIME_WINDOW(Doc.of(OpenemsType.BOOLEAN) //
 				.text("true, wenn 'jetzt' innerhalb eines im JSCalendar konfigurierten Blockier-Zeitfensters "
 						+ "liegt - unabhaengig davon, ob Prognose/Preis die Blockade gerade aufheben")), //
 		CURRENTLY_BLOCKED(Doc.of(OpenemsType.BOOLEAN) //
+				.persistencePriority(PersistencePriority.HIGH) //
 				.text("true, wenn aktuell tatsaechlich 'Ladeleistung waehrend Blockierung' als Power-Constraint "
-						+ "gesetzt ist")), //
+						+ "gesetzt ist - historisiert, um in der History-Ansicht nachtraeglich sehen zu koennen, "
+						+ "wann der Block an einem bestimmten Tag tatsaechlich aktiv war")), //
 		NEGATIVE_PRICE_DURATION(Doc.of(OpenemsType.LONG) //
 				.unit(Unit.CUMULATED_SECONDS) //
 				.persistencePriority(PersistencePriority.HIGH) //
