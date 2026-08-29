@@ -167,8 +167,11 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		}
 
 		if (!this.forecastCheckDoneToday && !now.toLocalTime().isBefore(this.checkTime)) {
-			this.evaluateForecast(now);
-			this.forecastCheckDoneToday = true;
+			// Only counts as "done for today" if a Prediction was actually available -
+			// otherwise (e.g. PredictorManager not yet bound/trained right after an Edge
+			// restart, see readme.adoc) retry on the next Cycle instead of losing the
+			// day's only forecast-based unblock opportunity to a brief startup race.
+			this.forecastCheckDoneToday = this.evaluateForecast(now);
 		}
 
 		var marketPriceData = this.marketPriceProvider.getMarketPrices().getValue();
@@ -248,9 +251,20 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	 * design, but that made a merely temporarily unavailable forecast silently
 	 * defeat the window every time it triggered.
 	 *
+	 * <p>
+	 * Returns whether a Prediction was actually available - {@link #run()} only
+	 * marks the day's check as done if this returns {@code true}, so a brief
+	 * startup race (e.g. {@code PredictorManager} not yet bound, or the model
+	 * not yet trained, right after an Edge restart - both observed live, see
+	 * readme.adoc) is retried on the next Cycle instead of silently losing the
+	 * entire day's forecast-based unblock opportunity to a single bad-timed
+	 * first attempt.
+	 *
 	 * @param now the current {@link ZonedDateTime}
+	 * @return {@code true} if a Prediction was available and evaluated,
+	 *         {@code false} if it should be retried on the next Cycle
 	 */
-	private void evaluateForecast(ZonedDateTime now) {
+	private boolean evaluateForecast(ZonedDateTime now) {
 		var afternoonStart = now.toLocalDate().atTime(this.afternoonWindowStart).atZone(now.getZone());
 		var tomorrowMidnight = now.toLocalDate().plusDays(1).atStartOfDay(now.getZone());
 
@@ -258,8 +272,8 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		if (prediction.isEmpty()) {
 			this._setForecastedAfternoonProduction(null);
 			this.logInfo(this.log, "Keine Prognose verfuegbar (" + this.productionChannelAddress
-					+ ") - Zeitfenster entscheidet");
-			return;
+					+ ") - erneuter Versuch im naechsten Zyklus");
+			return false;
 		}
 
 		var values = prediction.getBetweenExclusive(afternoonStart, tomorrowMidnight).toList();
@@ -267,7 +281,7 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			this._setForecastedAfternoonProduction(null);
 			this.logInfo(this.log,
 					"Prognose vorhanden, aber keine Werte im Nachmittagsfenster - Zeitfenster entscheidet");
-			return;
+			return true;
 		}
 
 		var forecastedWh = Math.round(values.stream().mapToInt(Integer::intValue).sum() * 0.25f);
@@ -281,6 +295,7 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			this.logInfo(this.log, "PV-Prognose ab " + this.config.afternoonWindowStart() + ": " + forecastedWh
 					+ " Wh (>= " + this.config.minRemainingProductionWh() + " Wh) - Block bleibt aktiv");
 		}
+		return true;
 	}
 
 	/**
