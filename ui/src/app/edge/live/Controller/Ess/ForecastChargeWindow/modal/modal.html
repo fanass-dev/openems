@@ -2,40 +2,92 @@
   <oe-modal [title]="component.alias" [component]="component">
     <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE' | translate"
       [value]="priceWithCurrency"></oe-modal-line>
-    <oe-modal-line [name]="'GENERAL.STATUS' | translate" [value]="blockStatus"></oe-modal-line>
-    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.LAST_DECISION' | translate"
-      [value]="lastDecision" style="font-size: small;"></oe-modal-line>
-    <oe-modal-horizontal-line></oe-modal-horizontal-line>
-    <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.CURRENT_PRODUCTION' | translate"
-      [value]="currentProduction"></oe-modal-line>
-    <ion-item lines="none">
-      <table style="width: 100%;" class="ion-text-center">
-        <tr>
-          <td style="text-align: left; padding: 6px 4px;">
-            <strong>{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TABLE_TITLE' | translate }}</strong>
-          </td>
-          @for (column of predictionColumns; track column.hours) {
-            <td style="padding: 6px 4px;"><strong>{{ column.hours }}h</strong></td>
-          }
-        </tr>
-        <tr>
-          <td style="text-align: left; padding: 6px 4px;">{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.ROW_AHEAD' | translate }}</td>
-          @for (column of predictionColumns; track column.hours) {
-            <td style="padding: 6px 4px;">{{ column.ahead }}</td>
-          }
-        </tr>
-        <tr>
-          <td style="text-align: left; padding: 6px 4px;">{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.ROW_REALIZED' | translate }}</td>
-          @for (column of predictionColumns; track column.hours) {
-            <td style="padding: 6px 4px;">{{ column.realized }}</td>
-          }
-        </tr>
-      </table>
-    </ion-item>
-    <oe-modal-horizontal-line></oe-modal-horizontal-line>
     <oe-modal-info-line
       [info]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.CHART_TITLE' | translate"></oe-modal-info-line>
     <forecastChargeWindowPriceChart class="ion-padding" [component]="component" [edge]="edge">
     </forecastChargeWindowPriceChart>
+    <oe-modal-horizontal-line></oe-modal-horizontal-line>
+    <oe-modal-info-line [info]="blockStatus" [icon]="blockStatusIcon"></oe-modal-info-line>
+
+    <ion-item lines="none">
+      <ion-label>{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.LAST_DECISION' | translate }}</ion-label>
+
+      <!-- Compact at-a-glance summary of the three factors behind 'lastDecision' - icons
+           only (no permanent text labels), each in a tinted badge for contrast against the
+           page background. 'title' gives a hover/long-press tooltip; the full text remains
+           available via the info button below. -->
+      <div style="display: flex; align-items: center; gap: 0.7rem;">
+        <div style="width: 2.2rem; height: 2.2rem; border-radius: 8px; display: flex; align-items: center; justify-content: center;"
+          [style.background]="withinTimeWindowBadgeBg">
+          <ion-icon [name]="withinTimeWindowIcon.name" [color]="withinTimeWindowIcon.color" size="large"
+            [title]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TIME_WINDOW' | translate"></ion-icon>
+        </div>
+        <span style="display: flex; align-items: center; gap: 4px;">
+          <div style="width: 2.2rem; height: 2.2rem; border-radius: 8px; display: flex; align-items: center; justify-content: center;"
+            [style.background]="forecastBadgeBg">
+            <ion-icon [name]="forecastIcon.name" [color]="forecastIcon.color" size="large"
+              [title]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TABLE_TITLE' | translate"></ion-icon>
+          </div>
+          @if (forecastedWhText) {
+            <span style="font-size: 0.76rem; color: var(--ion-color-medium); white-space: nowrap;">({{ forecastedWhText }})</span>
+          }
+        </span>
+        <div style="width: 2.2rem; height: 2.2rem; border-radius: 8px; display: flex; align-items: center; justify-content: center;"
+          [style.background]="priceBadgeBg">
+          <svg viewBox="0 0 512 512" width="24" height="24" [style.color]="priceIconColor"
+            [attr.title]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE' | translate">
+            <rect x="32" y="96" width="448" height="224" rx="20" ry="20" fill="none" stroke="currentColor"
+              stroke-width="30" stroke-linejoin="round" />
+            <text x="256" y="286" text-anchor="middle" font-size="190" fill="currentColor">&#8364;</text>
+          </svg>
+        </div>
+      </div>
+
+      <ion-button id="lastDecisionPopoverTrigger" fill="clear" slot="end">
+        <ion-icon slot="icon-only" name="information-circle-outline"></ion-icon>
+      </ion-button>
+    </ion-item>
+    <ion-popover trigger="lastDecisionPopoverTrigger" side="bottom" alignment="center">
+      <ng-template>
+        <ion-content class="ion-padding" style="max-width: 320px; font-size: small;">
+          {{ lastDecision }}
+        </ion-content>
+      </ng-template>
+    </ion-popover>
+
+    <ion-item lines="none">
+      <ion-label>{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TABLE_TITLE' | translate }}</ion-label>
+      <ion-button id="forecastPopoverTrigger" fill="clear" slot="end">
+        <ion-icon slot="icon-only" name="information-circle-outline"></ion-icon>
+      </ion-button>
+    </ion-item>
+    <ion-popover trigger="forecastPopoverTrigger" side="bottom" alignment="center">
+      <ng-template>
+        <ion-content class="ion-padding">
+          <oe-modal-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.CURRENT_PRODUCTION' | translate"
+            [value]="currentProduction"></oe-modal-line>
+          <table style="width: 100%;" class="ion-text-center">
+            <tr>
+              <td style="text-align: left; padding: 6px 4px;"></td>
+              @for (column of predictionColumns; track column.hours) {
+                <td style="padding: 6px 4px;"><strong>{{ column.hours }}h</strong></td>
+              }
+            </tr>
+            <tr>
+              <td style="text-align: left; padding: 6px 4px;">{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.ROW_AHEAD' | translate }}</td>
+              @for (column of predictionColumns; track column.hours) {
+                <td style="padding: 6px 4px;">{{ column.ahead }}</td>
+              }
+            </tr>
+            <tr>
+              <td style="text-align: left; padding: 6px 4px;">{{ 'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.ROW_REALIZED' | translate }}</td>
+              @for (column of predictionColumns; track column.hours) {
+                <td style="padding: 6px 4px;">{{ column.realized }}</td>
+              }
+            </tr>
+          </table>
+        </ion-content>
+      </ng-template>
+    </ion-popover>
   </oe-modal>
 }

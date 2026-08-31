@@ -3,6 +3,37 @@
     'oe-time-of-use', color: 'normal'}" [modalComponent]="modalComponent">
     <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE' | translate"
       [value]="priceWithCurrency"></oe-flat-widget-line>
-    <oe-flat-widget-line [name]="'GENERAL.STATUS' | translate" [value]="blockStatus"></oe-flat-widget-line>
+    <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.BATTERY_CHARGE_LOCK' | translate">
+      <ion-icon [name]="blockStatusIcon.name" [color]="blockStatusIcon.color" size="small" [title]="blockStatus">
+      </ion-icon>
+    </oe-flat-widget-line>
+    <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TABLE_TITLE' | translate">
+      <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem;">
+        <div style="width: 1.6rem; height: 1.6rem; border-radius: 6px; display: flex; align-items: center; justify-content: center;"
+          [style.background]="withinTimeWindowBadgeBg">
+          <ion-icon [name]="withinTimeWindowIcon.name" [color]="withinTimeWindowIcon.color" size="small"
+            [title]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TIME_WINDOW' | translate"></ion-icon>
+        </div>
+        <span style="display: flex; align-items: center; gap: 3px;">
+          <div style="width: 1.6rem; height: 1.6rem; border-radius: 6px; display: flex; align-items: center; justify-content: center;"
+            [style.background]="forecastBadgeBg">
+            <ion-icon [name]="forecastIcon.name" [color]="forecastIcon.color" size="small"
+              [title]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.TABLE_TITLE' | translate"></ion-icon>
+          </div>
+          @if (forecastedWhText) {
+            <span style="font-size: 0.7rem; color: var(--ion-color-medium); white-space: nowrap;">({{ forecastedWhText }})</span>
+          }
+        </span>
+        <div style="width: 1.6rem; height: 1.6rem; border-radius: 6px; display: flex; align-items: center; justify-content: center;"
+          [style.background]="priceBadgeBg">
+          <svg viewBox="0 0 512 512" width="16" height="16" [style.color]="priceIconColor"
+            [attr.title]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE' | translate">
+            <rect x="32" y="96" width="448" height="224" rx="20" ry="20" fill="none" stroke="currentColor"
+              stroke-width="30" stroke-linejoin="round" />
+            <text x="256" y="286" text-anchor="middle" font-size="190" fill="currentColor">&#8364;</text>
+          </svg>
+        </div>
+      </div>
+    </oe-flat-widget-line>
   </oe-flat-widget>
 }

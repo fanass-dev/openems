@@ -535,7 +535,9 @@
                     "CURRENT_PRODUCTION": "Aktuell gemessen",
                     "TABLE_TITLE": "Prognose",
                     "ROW_AHEAD": "Ahead",
-                    "ROW_REALIZED": "Realized"
+                    "ROW_REALIZED": "Realized",
+                    "TIME_WINDOW": "Zeitfenster",
+                    "BATTERY_CHARGE_LOCK": "Batterieladungssperre"
                 },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Aktive Beladung aus dem Netz aktivieren",

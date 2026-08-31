@@ -546,7 +546,9 @@
                     "CURRENT_PRODUCTION": "Currently measured",
                     "TABLE_TITLE": "Forecast",
                     "ROW_AHEAD": "Ahead",
-                    "ROW_REALIZED": "Realized"
+                    "ROW_REALIZED": "Realized",
+                    "TIME_WINDOW": "Time window",
+                    "BATTERY_CHARGE_LOCK": "Battery charge lock"
                 },
                 "TIME_OF_USE_TARIFF": {
                     "CHARGE_FROM_GRID_ACTIVATE": "Activate charge from the grid",
