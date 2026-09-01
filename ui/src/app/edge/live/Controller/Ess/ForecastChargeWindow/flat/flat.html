@@ -1,7 +1,7 @@
 @if (isInitialized) {
   <oe-flat-widget button [title]="component.alias" [icon]="{name:
     'oe-time-of-use', color: 'normal'}" [modalComponent]="modalComponent">
-    <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE' | translate"
+    <oe-flat-widget-line [name]="priceLabel"
       [value]="priceWithCurrency"></oe-flat-widget-line>
     <oe-flat-widget-line [name]="'EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.BATTERY_CHARGE_LOCK' | translate">
       <ion-icon [name]="blockStatusIcon.name" [color]="blockStatusIcon.color" size="small" [title]="blockStatus">

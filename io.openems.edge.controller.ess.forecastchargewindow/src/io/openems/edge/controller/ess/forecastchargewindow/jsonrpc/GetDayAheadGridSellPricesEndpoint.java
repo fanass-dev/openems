@@ -19,11 +19,14 @@ import io.openems.edge.controller.ess.forecastchargewindow.jsonrpc.GetDayAheadGr
  * Unlike {@code CurrentGridSellPrice} (a historized Channel holding only the
  * already-elapsed current-quarter-hour value), this returns the full
  * day-ahead price array as currently known - including the not-yet-elapsed
- * remainder of today - straight from the in-memory
- * {@code EntsoeMarketPriceProvider}, for a "past + planned future" Live-view
- * chart (analogous to {@code Controller.Ess.Time-Of-Use-Tariff}'s schedule
- * chart, but without needing to hook into the unrelated
- * EnergyScheduleHandler/EnergyScheduler optimization framework).
+ * remainder of today - for a "past + planned future" Live-view chart
+ * (analogous to {@code Controller.Ess.Time-Of-Use-Tariff}'s schedule chart,
+ * but without needing to hook into the unrelated
+ * EnergyScheduleHandler/EnergyScheduler optimization framework). The past
+ * part comes from the historized {@code CurrentGridSellPrice} Channel, the
+ * future part from whichever {@code TimeOfUseTariff} Component is currently
+ * resolved from {@code Config#priceProviderIds()} (see
+ * {@code ForecastChargeWindowImpl#resolvePrices()}).
  *
  * <p>
  * Example request:

@@ -20,6 +20,7 @@ export class FlatComponent extends AbstractFlatWidget implements OnInit {
     private static readonly SUCCESS_BADGE_BG = "rgba(51,102,0,0.14)";
 
     protected priceWithCurrency: string = "-";
+    protected priceLabel: string = "-";
     protected blockStatus: string = "-";
     protected blockStatusIcon: Icon = { name: "help-outline", color: "medium", size: "small" };
     protected modalComponent: Modal | null = null;
@@ -51,6 +52,7 @@ export class FlatComponent extends AbstractFlatWidget implements OnInit {
     protected override getChannelAddresses(): ChannelAddress[] {
         return [
             new ChannelAddress(this.component.id, "CurrentGridSellPrice"),
+            new ChannelAddress(this.component.id, "CurrentGridSellPriceProvider"),
             new ChannelAddress(this.component.id, "CurrentlyBlocked"),
             new ChannelAddress(this.component.id, "WithinTimeWindow"),
             new ChannelAddress(this.component.id, "ForecastLiftedToday"),
@@ -62,6 +64,9 @@ export class FlatComponent extends AbstractFlatWidget implements OnInit {
     protected override onCurrentData(currentData: CurrentData): void {
         const price = currentData.allComponents[this.component.id + "/CurrentGridSellPrice"];
         this.priceWithCurrency = Utils.CONVERT_PRICE_TO_CENT_PER_KWH(2, "Ct/kWh")(price);
+        const priceProvider = currentData.allComponents[this.component.id + "/CurrentGridSellPriceProvider"];
+        const priceLabelBase = this.translate.instant("EDGE.INDEX.WIDGETS.FORECAST_CHARGE_WINDOW.PRICE");
+        this.priceLabel = priceProvider ? `${priceLabelBase} (${priceProvider})` : priceLabelBase;
 
         const blocked = currentData.allComponents[this.component.id + "/CurrentlyBlocked"];
         this.blockStatus = this.translate.instant(blocked === 1

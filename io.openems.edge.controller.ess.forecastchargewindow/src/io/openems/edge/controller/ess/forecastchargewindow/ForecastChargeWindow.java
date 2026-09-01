@@ -28,7 +28,7 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 						+ "Tag ursaechlich fuer eine vorzeitige Aufhebung war")), //
 		PRICE_CURRENTLY_NEGATIVE(Doc.of(OpenemsType.BOOLEAN) //
 				.persistencePriority(PersistencePriority.HIGH) //
-				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis (ENTSO-E) negativ ist - historisiert, um "
+				.text("true, wenn der aktuelle Day-Ahead-Boersenpreis negativ ist - historisiert, um "
 						+ "nachtraeglich pruefen zu koennen, ob ein negativer Preis zu einem bestimmten Zeitpunkt "
 						+ "ursaechlich fuer eine Aufhebung war")), //
 		WITHIN_TIME_WINDOW(Doc.of(OpenemsType.BOOLEAN) //
@@ -47,8 +47,11 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 		CURRENT_GRID_SELL_PRICE(Doc.of(OpenemsType.DOUBLE) //
 				.unit(Unit.MONEY_PER_MEGAWATT_HOUR) //
 				.persistencePriority(PersistencePriority.HIGH) //
-				.text("Aktueller Day-Ahead-Boersenpreis (ENTSO-E) fuer die laufende Viertelstunde - "
-						+ "historisiert, um den Preisverlauf in der History-Ansicht darstellen zu koennen"));
+				.text("Aktueller Day-Ahead-Boersenpreis fuer die laufende Viertelstunde - historisiert, um den "
+						+ "Preisverlauf in der History-Ansicht darstellen zu koennen")), //
+		CURRENT_GRID_SELL_PRICE_PROVIDER(Doc.of(OpenemsType.STRING) //
+				.text("Alias des Preis-Anbieters (aus 'Preis-Anbieter' Rangfolge), von dem der aktuell "
+						+ "angezeigte Boersenpreis stammt - nur fuer die Live-Anzeige, nicht historisiert"));
 
 		private final Doc doc;
 
@@ -208,5 +211,24 @@ public interface ForecastChargeWindow extends Controller, OpenemsComponent {
 	 */
 	public default void _setCurrentGridSellPrice(Double value) {
 		this.getCurrentGridSellPriceChannel().setNextValue(value);
+	}
+
+	/**
+	 * Gets the Channel for {@link ChannelId#CURRENT_GRID_SELL_PRICE_PROVIDER}.
+	 *
+	 * @return the Channel
+	 */
+	public default StringReadChannel getCurrentGridSellPriceProviderChannel() {
+		return this.channel(ChannelId.CURRENT_GRID_SELL_PRICE_PROVIDER);
+	}
+
+	/**
+	 * Internal method to set the 'nextValue' on
+	 * {@link ChannelId#CURRENT_GRID_SELL_PRICE_PROVIDER}.
+	 *
+	 * @param value the next value
+	 */
+	public default void _setCurrentGridSellPriceProvider(String value) {
+		this.getCurrentGridSellPriceProviderChannel().setNextValue(value);
 	}
 }

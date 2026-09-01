@@ -8,7 +8,11 @@ import static io.openems.edge.ess.power.api.Relationship.GREATER_OR_EQUALS;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
@@ -26,6 +30,7 @@ import org.slf4j.LoggerFactory;
 import io.openems.common.exceptions.OpenemsError.OpenemsNamedException;
 import io.openems.common.jscalendar.JSCalendar;
 import io.openems.common.session.Role;
+import io.openems.common.timedata.Resolution;
 import io.openems.common.types.ChannelAddress;
 import io.openems.common.utils.DateUtils;
 import io.openems.edge.common.component.AbstractOpenemsComponent;
@@ -43,9 +48,8 @@ import io.openems.edge.predictor.api.manager.PredictorManager;
 import io.openems.edge.timedata.api.Timedata;
 import io.openems.edge.timedata.api.TimedataProvider;
 import io.openems.edge.timedata.api.utils.CalculateActiveTime;
-import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeConfiguration;
-import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeMarketPriceProvider;
-import io.openems.edge.timeofusetariff.entsoe.priceprovider.EntsoeMarketPriceProviderPool;
+import io.openems.edge.timeofusetariff.api.TimeOfUsePrices;
+import io.openems.edge.timeofusetariff.api.TimeOfUseTariff;
 
 @Designate(ocd = Config.class, factory = true)
 @Component(//
@@ -60,6 +64,21 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	private static final LocalTime DEFAULT_CHECK_TIME = LocalTime.of(8, 0);
 	private static final String CONSTRAINT_ID = "ForecastChargeWindow";
 
+	/**
+	 * Human-readable display names for known {@code TimeOfUseTariff} Factory-IDs
+	 * (see {@link OpenemsComponent#serviceFactoryPid()}), used by
+	 * {@link #resolvePricesWithProvider()} to show a recognizable provider name
+	 * in the Live-view instead of a Component-ID/alias that might just be the
+	 * default "timeOfUseTariffX". Deliberately keyed by Factory-ID, not by
+	 * concrete implementation class, so this bundle does not need a compile-time
+	 * dependency on any specific provider bundle (matches the reasoning for
+	 * depending on io.openems.edge.timeofusetariff.api only, see bnd.bnd).
+	 */
+	private static final Map<String, String> PROVIDER_DISPLAY_NAMES = Map.of(//
+			"TimeOfUseTariff.ENTSO-E", "ENTSO-E", //
+			"TimeOfUseTariff.EnergyCharts", "Energy Charts", //
+			"TimeOfUseTariff.Awattar", "aWATTar");
+
 	private final Logger log = LoggerFactory.getLogger(ForecastChargeWindowImpl.class);
 
 	@Reference
@@ -68,20 +87,9 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 	@Reference
 	private PredictorManager predictorManager;
 
-	@Reference
-	private EntsoeMarketPriceProviderPool marketPriceProviderPool;
-
 	@Reference(policy = ReferencePolicy.DYNAMIC, policyOption = ReferencePolicyOption.GREEDY, //
 			cardinality = ReferenceCardinality.OPTIONAL)
 	private volatile Timedata timedata = null;
-
-	/**
-	 * Obtained from {@link #marketPriceProviderPool} in {@link #activate}, using
-	 * the configured Bidding Zone/Security Token - pooled by that same
-	 * (Zone, Token) pair, so a Tariff.Manual component configured with the same
-	 * credentials shares the underlying ENTSO-E fetch instead of duplicating it.
-	 */
-	private EntsoeMarketPriceProvider marketPriceProvider;
 
 	private final CalculateActiveTime negativePriceDuration = new CalculateActiveTime(this,
 			ForecastChargeWindow.ChannelId.NEGATIVE_PRICE_DURATION);
@@ -126,18 +134,12 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		this.afternoonWindowStart = this.parseTimeOrFallback(config.afternoonWindowStart(),
 				DEFAULT_AFTERNOON_WINDOW_START, "Beginn Nachmittagsfenster");
 		this.checkTime = this.parseTimeOrFallback(config.checkTime(), DEFAULT_CHECK_TIME, "Prognose-Pruefzeit");
-		this.marketPriceProvider = this.marketPriceProviderPool
-				.get(new EntsoeConfiguration(config.biddingZone(), config.securityToken()));
 		this.blockWindow = JSCalendar.Tasks.fromStringOrEmpty(this.componentManager.getClock(), config.jsCalendar());
 	}
 
 	@Override
 	@Deactivate
 	protected void deactivate() {
-		if (this.marketPriceProvider != null) {
-			this.marketPriceProviderPool.unget(this.marketPriceProvider);
-			this.marketPriceProvider = null;
-		}
 		super.deactivate();
 	}
 
@@ -149,6 +151,89 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			return fallback;
 		}
 		return parsed;
+	}
+
+	/**
+	 * Pairs the resolved {@link TimeOfUsePrices} with a human-readable display
+	 * name of the Component that supplied them (see
+	 * {@link #providerDisplayName(OpenemsComponent)}), so the Live-view can show
+	 * which of the configured providers is currently active - see
+	 * {@link #resolvePricesWithProvider()}.
+	 */
+	private record ResolvedPrices(TimeOfUsePrices prices, String providerDisplayName) {
+		private static final ResolvedPrices EMPTY = new ResolvedPrices(TimeOfUsePrices.EMPTY_PRICES, null);
+	}
+
+	/**
+	 * Resolves day-ahead prices from the configured {@link Config#priceProviderIds()},
+	 * trying each Component-ID in order and using the first one that returns
+	 * non-empty prices - so a temporarily unavailable/misconfigured provider (e.g.
+	 * ENTSO-E during a maintenance window, see readme.adoc) automatically falls
+	 * back to the next configured provider instead of losing price data entirely.
+	 * Resolved fresh on every call (not cached at {@link #activate}) since a
+	 * provider Component may not yet be available right after an Edge restart
+	 * and could become available later - same reasoning as
+	 * {@link #applyEssConstraint} resolving {@link Config#ess_id()} fresh each
+	 * Cycle instead of once.
+	 *
+	 * @return the resolved prices together with the providing Component's alias,
+	 *         or {@link ResolvedPrices#EMPTY} if none of the configured providers
+	 *         currently has data
+	 */
+	private ResolvedPrices resolvePricesWithProvider() {
+		for (var providerId : this.config.priceProviderIds()) {
+			if (providerId == null || providerId.isBlank()) {
+				continue;
+			}
+			try {
+				OpenemsComponent component = this.componentManager.getComponent(providerId);
+				if (!(component instanceof TimeOfUseTariff provider)) {
+					this.logWarn(this.log,
+							"Preis-Anbieter '" + providerId + "' implementiert kein TimeOfUseTariff - wird ignoriert.");
+					continue;
+				}
+				var prices = provider.getPrices();
+				if (!prices.isEmpty()) {
+					return new ResolvedPrices(prices, providerDisplayName(component));
+				}
+			} catch (OpenemsNamedException e) {
+				this.logWarn(this.log, "Preis-Anbieter '" + providerId + "' nicht gefunden: " + e.getMessage());
+			}
+		}
+		return ResolvedPrices.EMPTY;
+	}
+
+	/**
+	 * Picks a human-readable display name for the given price-provider
+	 * Component - a hardcoded name for recognized {@code TimeOfUseTariff}
+	 * Factory-IDs (see {@link #PROVIDER_DISPLAY_NAMES}), falling back to the
+	 * Component's alias if one was actually configured (i.e. differs from its
+	 * Component-ID - an unset alias defaults to the Component-ID), and to the
+	 * Component-ID itself as the last resort.
+	 *
+	 * @param component the resolved price-provider Component
+	 * @return the display name to show in the Live-view
+	 */
+	private static String providerDisplayName(OpenemsComponent component) {
+		var knownName = PROVIDER_DISPLAY_NAMES.get(component.serviceFactoryPid());
+		if (knownName != null) {
+			return knownName;
+		}
+		var alias = component.alias();
+		if (alias != null && !alias.isBlank() && !alias.equals(component.id())) {
+			return alias;
+		}
+		return component.id();
+	}
+
+	/**
+	 * Resolves day-ahead prices, discarding the provider alias.
+	 *
+	 * @return the resolved {@link TimeOfUsePrices} - see
+	 *         {@link #resolvePricesWithProvider()}.
+	 */
+	private TimeOfUsePrices resolvePrices() {
+		return this.resolvePricesWithProvider().prices();
 	}
 
 	@Override
@@ -174,10 +259,12 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 			this.forecastCheckDoneToday = this.evaluateForecast(now);
 		}
 
-		var marketPriceData = this.marketPriceProvider.getMarketPrices().getValue();
-		var currentPrice = marketPriceData == null ? null : marketPriceData.getValues().getAt(now);
+		var resolved = this.resolvePricesWithProvider();
+		var prices = resolved.prices();
+		Double currentPrice = prices.isEmpty() ? null : prices.getAtOrElse(now, null);
 		var priceNegative = currentPrice != null && currentPrice < 0;
 		this._setCurrentGridSellPrice(currentPrice);
+		this._setCurrentGridSellPriceProvider(currentPrice != null ? resolved.providerDisplayName() : null);
 		this._setPriceCurrentlyNegative(priceNegative);
 		this._setForecastLiftedToday(this.forecastLiftedToday);
 		this.negativePriceDuration.update(priceNegative);
@@ -370,12 +457,36 @@ public class ForecastChargeWindowImpl extends AbstractOpenemsComponent
 		builder.handleRequest(new GetDayAheadGridSellPricesEndpoint(), endpoint -> {
 			endpoint.setGuards(EdgeGuards.roleIsAtleast(Role.GUEST));
 		}, call -> {
-			var marketPriceData = this.marketPriceProvider.getMarketPrices().getValue();
-			var points = marketPriceData == null //
-					? List.<PricePoint>of() //
-					: marketPriceData.getValues().toMap().entrySet().stream() //
-							.map(e -> new PricePoint(e.getKey(), e.getValue())) //
-							.toList();
+			var now = ZonedDateTime.now(this.componentManager.getClock());
+			var points = new ArrayList<PricePoint>();
+
+			// Past (already-elapsed today): TimeOfUseTariff.getPrices() only ever
+			// returns 'now onward' (that is the convention of every implementation of
+			// this generic interface, e.g. TimeOfUseTariff.Awattar/ENTSO-E) - so the
+			// already-elapsed part of the chart has to come from the historized
+			// CurrentGridSellPrice Channel instead.
+			if (this.timedata != null) {
+				try {
+					var todayMidnight = now.toLocalDate().atStartOfDay(now.getZone());
+					var currentGridSellPriceAddress = new ChannelAddress(this.id(), "CurrentGridSellPrice");
+					var historicData = this.timedata.queryHistoricData(null, todayMidnight, now,
+							Set.of(currentGridSellPriceAddress), new Resolution(15, ChronoUnit.MINUTES));
+					for (var entry : historicData.entrySet()) {
+						var value = entry.getValue().get(currentGridSellPriceAddress);
+						if (value != null && !value.isJsonNull()) {
+							points.add(new PricePoint(entry.getKey().toInstant(), value.getAsDouble()));
+						}
+					}
+				} catch (OpenemsNamedException e) {
+					this.logWarn(this.log, "Konnte historische Day-Ahead-Preise nicht laden: " + e.getMessage());
+				}
+			}
+
+			// Future (now onward): from the currently resolved price provider.
+			this.resolvePrices().toMap().entrySet().stream() //
+					.map(e -> new PricePoint(e.getKey(), e.getValue())) //
+					.forEach(points::add);
+
 			return new Response(points, "EUR/MWh");
 		});
 	}

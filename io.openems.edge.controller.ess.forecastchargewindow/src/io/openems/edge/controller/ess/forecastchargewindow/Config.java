@@ -1,10 +1,7 @@
 package io.openems.edge.controller.ess.forecastchargewindow;
 
 import org.osgi.service.metatype.annotations.AttributeDefinition;
-import org.osgi.service.metatype.annotations.AttributeType;
 import org.osgi.service.metatype.annotations.ObjectClassDefinition;
-
-import io.openems.common.types.EntsoeBiddingZone;
 
 @ObjectClassDefinition(//
 		name = "Controller Ess Forecast Charge Window", //
@@ -13,9 +10,10 @@ import io.openems.common.types.EntsoeBiddingZone;
 				+ "hebt die Blockade vorzeitig auf: (1) taeglich einmal geprueft, PV-Prognose ab einer "
 				+ "konfigurierten Uhrzeit laesst nur noch wenig Ertrag erwarten - Aufhebung gilt dann fuer den "
 				+ "Rest des Tages; (2) fortlaufend (jeder Cycle) geprueft, aktueller Day-Ahead-Boersenpreis "
-				+ "(direkt von der ENTSO-E Transparency Platform, unabhaengig von TariffManager/TariffGridSell) "
-				+ "ist negativ - Aufhebung gilt nur, solange der Preis negativ bleibt, und wird automatisch "
-				+ "wieder zurueckgenommen, sobald der Preis zurueck ins Positive dreht (ausser Grund 1 greift zu "
+				+ "(von einem der unter 'Preis-Anbieter' konfigurierten TimeOfUseTariff-Komponenten, mit "
+				+ "automatischem Fallback - unabhaengig von TariffManager/TariffGridSell) ist negativ - "
+				+ "Aufhebung gilt nur, solange der Preis negativ bleibt, und wird automatisch wieder "
+				+ "zurueckgenommen, sobald der Preis zurueck ins Positive dreht (ausser Grund 1 greift zu "
 				+ "diesem Zeitpunkt ebenfalls). Ausserhalb des konfigurierten Zeitfensters ist grundsaetzlich "
 				+ "nicht blockiert - das ist zugleich die Obergrenze fuer eine Blockade: sie kann nie laenger "
 				+ "dauern als bis zum Ende des jeweiligen Zeitfensters. Ohne belastbare Prognose (z. B. Ausfall "
@@ -87,16 +85,14 @@ import io.openems.common.types.EntsoeBiddingZone;
 					+ "Rest des Tages aufgehoben. Muss an die eigene Anlagengroesse angepasst werden.")
 	int minRemainingProductionWh() default 5000;
 
-	@AttributeDefinition(name = "Bidding Zone", //
-			description = "ENTSO-E-Gebotszone, fuer die der Day-Ahead-Preis abgefragt wird.")
-	EntsoeBiddingZone biddingZone();
-
-	@AttributeDefinition(name = "Security Token", //
-			description = "Security-Token fuer die ENTSO-E Transparency Platform. Bei gleicher Bidding Zone und "
-					+ "gleichem Token wie z. B. bei einer bereits konfigurierten Tariff.Manual-Komponente wird "
-					+ "intern dieselbe, bereits laufende Abfrage wiederverwendet (kein doppelter API-Zugriff).", //
-			type = AttributeType.PASSWORD, required = false)
-	String securityToken() default "";
+	@AttributeDefinition(name = "Preis-Anbieter (Rangfolge)", //
+			description = "Component-IDs von Komponenten, die das TimeOfUseTariff-Interface implementieren "
+					+ "(z. B. TimeOfUseTariff.ENTSO-E, TimeOfUseTariff.EnergyCharts, TimeOfUseTariff.Awattar), "
+					+ "in Rangfolge eingetragen. Es wird die erste Komponente verwendet, die gerade gueltige "
+					+ "Preisdaten liefert - faellt sie aus (z. B. Wartungsfenster beim Anbieter), wird "
+					+ "automatisch die naechste in der Liste versucht. Leer bedeutet: kein Preis verfuegbar, "
+					+ "die Zeitfenster-Entscheidung ist dann alleine massgeblich.")
+	String[] priceProviderIds() default {};
 
 	String webconsole_configurationFactory_nameHint() default "Controller Ess Forecast Charge Window [{id}]";
 }

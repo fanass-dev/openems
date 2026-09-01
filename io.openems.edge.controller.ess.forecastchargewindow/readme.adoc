@@ -31,8 +31,9 @@ auf:
   unvergütet ins Netz eingespeist, während die Batterie danach mangels Sonne
   gar nicht mehr voll würde.
 * **Negativer Börsenpreis** (fortlaufend geprüft): wenn der aktuelle
-  Day-Ahead-Preis - direkt von der ENTSO-E Transparency Platform, siehe
-  "Warum direkter ENTSO-E-Zugriff" unten - negativ ist, wird der Block
+  Day-Ahead-Preis - von einem der unter `priceProviderIds` konfigurierten
+  `TimeOfUseTariff`-Anbieter, siehe "Preis-Anbieter: Rangfolge mit Fallback"
+  unten - negativ ist, wird der Block
   **sofort** aufgehoben und automatisch wieder aktiviert, sobald der Preis
   zurück ins Positive dreht (außer die Prognose-Aufhebung greift zu diesem
   Zeitpunkt ebenfalls). Grund: eine Einspeisung bei negativem Preis kostet
@@ -56,9 +57,10 @@ Hintergrund-Thread nötig):
   (Standard 12:00) bis Tagesende. Liegt die Summe unter
   `minRemainingProductionWh`, wird `forecastLiftedToday` für den Rest des
   Tages auf `true` gesetzt.
-* **Preis-Prüfung** (jeden Cycle): fragt direkt beim
-  `EntsoeMarketPriceProviderPool` (Bundle `io.openems.edge.timeofusetariff.entsoe`)
-  den Day-Ahead-Preis für die aktuelle Viertelstunde ab.
+* **Preis-Prüfung** (jeden Cycle): fragt die in `priceProviderIds` eingetragenen
+  `TimeOfUseTariff`-Komponenten der Reihe nach ab (erste mit gültigen Daten
+  gewinnt, siehe `resolvePrices()`) und liest daraus den Day-Ahead-Preis für
+  die aktuelle Viertelstunde.
 * Aus beiden Zuständen wird der Ziel-Zustand
   (`forecastLiftedToday || preisAktuellNegativ`) berechnet. Ändert sich
   dieser Ziel-Zustand gegenüber dem zuletzt tatsächlich geschriebenen Wert,
@@ -89,9 +91,11 @@ Zeitfensters setzt - außerhalb davon gibt es nichts zu überschreiben.
 Liefert `PredictorManager.getPrediction(...)` keine (oder eine leere)
 Prognose - z. B. während der ersten ca. 30 Tage nach Einrichtung eines
 `Predictor.Production.LinearModel` (braucht mindestens 30 Tage historische
-Trainingsdaten) - oder liefert `EntsoeMarketPriceProvider.getMarketPrices()`
-keinen Preis für den aktuellen Zeitpunkt (ungültige/fehlende ENTSO-E-Zugangsdaten,
-oder Abruf fehlgeschlagen), zählt der jeweilige Grund einfach nicht als
+Trainingsdaten) - oder liefert keiner der in `priceProviderIds` konfigurierten
+Preis-Anbieter einen Preis für den aktuellen Zeitpunkt (ungültige/fehlende
+Zugangsdaten, Wartungsfenster beim Anbieter, oder Abruf fehlgeschlagen -
+`resolvePrices()` versucht dabei automatisch den nächsten Anbieter in der
+Rangfolge, bevor aufgegeben wird), zählt der jeweilige Grund einfach nicht als
 "Aufhebung rechtfertigend". Ist keiner der beiden Gründe erfüllt,
 bleibt der Block wie gewohnt aktiv (`blockedMaxChargePower`). Der Controller
 kann also nur zusätzlichen Nutzen bringen, nie eine Verschlechterung
@@ -104,13 +108,12 @@ gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
   Wetterprognose, nicht nur historische Werte), passend zum
   `sourceChannel`-Feld dort (Standard beider Seiten:
   `UnmanagedProductionActivePower`).
-* Für die Preis-Prüfung: ein gültiges ENTSO-E-Konto samt Security Token,
-  in der Config dieses Controllers selbst als `securityToken` und
-  `biddingZone` (`GERMANY`) eingetragen (siehe "Warum direkter
-  ENTSO-E-Zugriff" unten). Ohne gültige Zugangsdaten bzw. bei
-  fehlgeschlagenem Abruf liefert `getMarketPrices()` einfach keinen Preis,
-  die Preis-Prüfung greift dann nie (fail-safe, siehe oben) - kein Fehler,
-  kein Absturz.
+* Für die Preis-Prüfung: mindestens eine `TimeOfUseTariff`-Komponente
+  konfiguriert und deren Component-ID in `priceProviderIds` eingetragen
+  (siehe "Preis-Anbieter: Rangfolge mit Fallback" unten). Ohne konfigurierte
+  bzw. bei durchweg fehlschlagenden Anbietern liefert `resolvePrices()`
+  einfach `TimeOfUsePrices.EMPTY_PRICES`, die Preis-Prüfung greift dann nie
+  (fail-safe, siehe oben) - kein Fehler, kein Absturz.
 * Dieser Controller muss selbst im Scheduler aktiv sein (z. B. bei
   `Scheduler.JSCalendar` in `alwaysRunBeforeController_ids`/
   `alwaysRunAfterController_ids` eintragen) - sonst wird `run()` nie
@@ -120,7 +123,9 @@ gegenüber dem bisherigen, rein zeitgesteuerten Verhalten.
   andere Config-Änderungen an dieser Instanz nicht parallel von Hand
   vornehmen, sie würden bei der nächsten Prüfung überschrieben.
 
-== Warum direkter ENTSO-E-Zugriff (nicht über TariffManager/EEG2025)
+== Preis-Anbieter: Rangfolge mit Fallback (nicht über TariffManager/EEG2025)
+
+=== Warum nicht über `Tariff.Manual.EEG2025.GridSell`
 
 Ursprünglich las dieser Controller den Preis über die generische
 `TariffManager`/`TariffGridSell`-Schnittstelle, gespeist von
@@ -137,19 +142,38 @@ negative Wert). Zwei Konsequenzen:
   **nie** auslösen, da der Wert nie unter `0,0` fiel, sondern in negativen
   Stunden exakt bei `0,0` landete.
 
-Der eigentliche Marktpreis steckt in `EntsoeMarketPriceProvider`
-(`io.openems.edge.timeofusetariff.entsoe`), auf den `Tariff.Manual.EEG2025.GridSell`
-intern selbst zugreift, ohne ihn nach außen zu geben. Dieser Controller holt
-sich daher jetzt direkt eine eigene `EntsoeMarketPriceProvider`-Instanz über
-`EntsoeMarketPriceProviderPool` (Bidding Zone + Security Token als eigene
-Config-Felder). Der Pool dedupliziert nach (Bidding Zone, Token): trägt man
-hier dieselben Werte wie bei einer ggf. weiterhin vorhandenen
-`Tariff.Manual`-Komponente ein, wird intern dieselbe, bereits laufende
-ENTSO-E-Abfrage wiederverwendet - kein doppelter API-Zugriff.
+=== Warum mehrere Anbieter mit Rangfolge statt eines fest verdrahteten
 
-Da in dieser Installation `Tariff.Manual.EEG2025.GridSell` sonst keinen
-weiteren Verwender hat, kann diese Komponente entfallen, sobald dieser
-Controller umgestellt ist.
+Ein direkter, fest auf einen einzigen Anbieter (ursprünglich ENTSO-E)
+verdrahteter Zugriff hat sich in der Praxis als zu störanfällig erwiesen -
+die ENTSO-E Transparency Platform hatte wiederholt Wartungsfenster/Ausfälle,
+während derer weder der aktuelle Preis noch die Day-Ahead-Grafik verfügbar
+waren, obwohl andere Anbieter zur selben Zeit funktioniert hätten.
+
+Dieser Controller liest den Preis daher jetzt generisch über das
+`TimeOfUseTariff`-Interface (`getPrices()`), das mehrere offizielle
+OpenEMS-Bundles bereits implementieren - u. a. `TimeOfUseTariff.ENTSO-E`
+(`io.openems.edge.timeofusetariff.entsoe`, Bidding Zone + Security Token als
+eigene Config-Felder **auf dieser Komponente**, nicht mehr hier),
+`TimeOfUseTariff.Awattar` (kein Token nötig) und `TimeOfUseTariff.EnergyCharts`
+(Fraunhofer ISE, für Deutschland Daten von Bundesnetzagentur | SMARD.de,
+CC BY 4.0, ebenfalls kein Token nötig - eigenes, in dieser Installation
+neu hinzugefügtes Bundle).
+
+Das Config-Feld `priceProviderIds` enthält die Component-IDs dieser
+Anbieter-Komponenten in Rangfolge. `resolvePrices()` probiert sie der Reihe
+nach durch und verwendet die erste mit gültigen, nicht-leeren Preisdaten -
+fällt der erste (z. B. ENTSO-E während eines Wartungsfensters) aus, springt
+automatisch der nächste in der Liste ein.
+
+Der `EntsoeMarketPriceProviderPool` (in `TimeOfUseTariff.ENTSO-E` intern
+weiterhin verwendet) dedupliziert nach (Bidding Zone, Token): trägt man dort
+dieselben Werte wie bei einer ggf. weiterhin vorhandenen
+`Tariff.Manual`-Komponente ein, wird intern dieselbe, bereits laufende
+ENTSO-E-Abfrage wiederverwendet - kein doppelter API-Zugriff, wie zuvor.
+
+Die Felder `biddingZone`/`securityToken` gibt es auf diesem Controller nicht
+mehr - sie sind jetzt Config-Felder von `TimeOfUseTariff.ENTSO-E` selbst.
 
 **Security Token nur einmalig einsehbar**: Die ENTSO-E Transparency Platform
 zeigt ein generiertes Security Token nur zum Erzeugungszeitpunkt an, ein
@@ -177,17 +201,25 @@ wäre ein unpassend schwerer Hammer gewesen.
 
 Stattdessen implementiert `ForecastChargeWindowImpl` direkt `ComponentJsonApi`
 und registriert eine eigene, schlanke JSON-RPC-Route
-(`getDayAheadGridSellPrices`, siehe `jsonrpc/GetDayAheadGridSellPricesEndpoint.java`),
-die einfach den aktuell im Speicher gehaltenen ENTSO-E-Preisverlauf
-(`EntsoeMarketPriceProvider.getMarketPrices().getValue()`) unverändert als
-Liste von `(Zeitpunkt, Preis in EUR/MWh)`-Punkten zurückgibt - keine
-Optimierung, keine Persistierung, nur ein dünner Wrapper um Daten, die
-ohnehin schon im Speicher liegen. Die Live-Ansicht-Komponente
+(`getDayAheadGridSellPrices`, siehe `jsonrpc/GetDayAheadGridSellPricesEndpoint.java`).
+
+Seit der Umstellung auf das generische `TimeOfUseTariff`-Interface (siehe
+"Preis-Anbieter: Rangfolge mit Fallback" oben) liefert `getPrices()` nur noch
+Werte **ab jetzt in die Zukunft** - das ist die Konvention aller
+`TimeOfUseTariff`-Implementierungen (ENTSO-E, aWATTar, Energy-Charts
+gleichermaßen), nicht mehr wie zuvor beim direkten ENTSO-E-Zugriff auch
+bereits vergangene Werte des laufenden Tages. Der Endpunkt kombiniert daher
+zwei Quellen: die bereits verstrichenen Viertelstunden des heutigen Tages
+kommen aus der historisierten `CurrentGridSellPrice`
+(`Timedata.queryHistoricData`), die noch bevorstehenden aus `resolvePrices()`
+des aktuell aktiven Preis-Anbieters - zusammen ergibt das wieder dieselbe
+"Vergangenheit + bereits bekannte Zukunft"-Kurve wie zuvor. Die
+Live-Ansicht-Komponente
 (`ui/.../edge/live/Controller/Ess/ForecastChargeWindow/modal/priceChart.ts`)
 ruft diese Route beim Öffnen des Modals per `ComponentJsonApiRequest` ab und
-zeichnet die bereits vergangenen Viertelstunden als durchgezogene, die noch
-bevorstehenden als gestrichelte Linie - derselbe visuelle Trick wie bei
-`powerSocChart.ts`.
+zeichnet die bereits vergangenen Viertelstunden als deckende, die noch
+bevorstehenden als transparente Balken - zusätzlich rot eingefärbt bei
+negativem Preis, grün sonst.
 
 == Diagnose-Channels
 
