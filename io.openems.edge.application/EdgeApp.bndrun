@@ -210,6 +210,7 @@
 	bnd.identity;id='io.openems.edge.timeofusetariff.ancillarycosts',\
 	bnd.identity;id='io.openems.edge.timeofusetariff.awattar',\
 	bnd.identity;id='io.openems.edge.timeofusetariff.corrently',\
+	bnd.identity;id='io.openems.edge.timeofusetariff.energycharts',\
 	bnd.identity;id='io.openems.edge.timeofusetariff.entsoe',\
 	bnd.identity;id='io.openems.edge.timeofusetariff.ews',\
 	bnd.identity;id='io.openems.edge.timeofusetariff.groupe',\
@@ -511,5 +512,6 @@
 	io.openems.edge.evcs.goe.geminimanaged;version=snapshot,\
 	io.openems.edge.bridge.eos;version=snapshot,\
 	io.openems.edge.controller.api.eos;version=snapshot,\
-	io.openems.edge.controller.ess.topofcharge;version=snapshot
+	io.openems.edge.controller.ess.topofcharge;version=snapshot,\
+	io.openems.edge.timeofusetariff.energycharts;version=snapshot
 -resolve: manual

@@ -1,0 +1,3 @@
+= Energy-Charts
+
+Retrieves day-ahead electricity prices from the Energy-Charts API (https://api.energy-charts.info), operated by Fraunhofer ISE. For Germany (bidding zone "DE-LU"), the underlying data is republished from Bundesnetzagentur | SMARD.de under a CC BY 4.0 license. No API key required. Prices are already published in quarter-hourly resolution and updated hourly.
